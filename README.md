@@ -9,6 +9,7 @@
 - 经验沉淀模型：知识条目、规则版本、判断证据、人工反馈与最终结果分开存储。
 - 企业微信机器人：Webhook 严格校验、超时、错误归一化与测试接口。
 - PostgreSQL 数据模型和 Redis/BullMQ 后台任务基座。
+- 兼容独立本地 `xianyu_spider` 搜索服务的只读导入适配器；Cookie 不进入 Web 项目。
 - 演示模式：不配置数据库和 Redis 也能先查看界面与评分逻辑。
 
 ## 本机要求
@@ -25,6 +26,8 @@
 3. 首次建表：在 `apps/web` 目录运行 `pnpm db:migrate`，执行仓库内已生成的版本化迁移。
 4. 在项目根目录运行 `powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1`。
 5. 浏览器访问 `http://localhost:3000`。
+
+真实闲鱼数据接入步骤与授权风险见 [`docs/XIANYU_COLLECTOR.md`](docs/XIANYU_COLLECTOR.md)。
 
 不填写连接信息时，应用自动进入演示模式，便于先验收页面和规则。
 

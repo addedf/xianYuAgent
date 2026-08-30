@@ -17,6 +17,10 @@ Next.js Web / API（127.0.0.1:3000）
 
 独立 Worker
   └─ 消费 outbox 队列，发送通知并记录投递结果
+
+独立本地只读采集器（127.0.0.1:8000）
+  ├─ 用户本人完成闲鱼登录与可能的核身
+  └─ 搜索结果写入本机 PostgreSQL 的 xianyu_products 暂存表
 ```
 
 项目不包含 Docker 配置。未配置 PostgreSQL、Redis 或企业微信时，Web 仍可以演示数据启动；健康检查会明确显示哪些正式能力尚未连接。
@@ -26,6 +30,7 @@ Next.js Web / API（127.0.0.1:3000）
 - `src/domain`：纯领域模型与可解释评分，区分“个人卖家概率”“信息缺失”和“疑似假货风险”。
 - `src/server/db`：Drizzle schema 与 PostgreSQL 连接；所有重要判断、规则、知识和投递都保留版本或审计记录。
 - `src/server/notifications`：企业微信消息格式、Webhook 白名单、超时和错误归一化。
+- `src/server/sources`：本地采集器契约、回环地址限制、商品规范化与去重入库。
 - `src/server/queue.ts`：Redis / BullMQ 队列连接；通知通过 outbox 思路异步发送，支持重试和幂等扩展。
 - `scripts/worker.ts`：独立通知 Worker，和 Web 进程解耦。
 - `src/components`：证据优先的工作台界面，不承担核心业务判断。

@@ -27,7 +27,7 @@ const actionLabels: Record<RecommendedAction, string> = {
   skip: "默认跳过",
 };
 
-export function LeadWorkbench({ items }: { items: AssessedListing[] }) {
+export function LeadWorkbench({ items, demoMode = true }: { items: AssessedListing[]; demoMode?: boolean }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [selectedId, setSelectedId] = useState(items[0]?.listing.id ?? "");
   const [feedback, setFeedback] = useState<string | null>(null);
@@ -117,10 +117,17 @@ export function LeadWorkbench({ items }: { items: AssessedListing[] }) {
             <h2>{listing.brand} {listing.model}</h2>
             <p>{listing.title}</p>
           </div>
-          <button className="button button-secondary" type="button" disabled title="真实适配器接入后可用">
-            打开原帖
-            <ArrowSquareOut size={17} aria-hidden="true" />
-          </button>
+          {listing.sourceUrl ? (
+            <a className="button button-secondary" href={listing.sourceUrl} target="_blank" rel="noreferrer">
+              打开原帖
+              <ArrowSquareOut size={17} aria-hidden="true" />
+            </a>
+          ) : (
+            <button className="button button-secondary" type="button" disabled title="当前记录没有原帖地址">
+              打开原帖
+              <ArrowSquareOut size={17} aria-hidden="true" />
+            </button>
+          )}
         </header>
 
         <div className="lead-facts">
@@ -194,7 +201,11 @@ export function LeadWorkbench({ items }: { items: AssessedListing[] }) {
                 <button type="button" onClick={() => recordFeedback("需要纠正")}><XCircle size={17} />需要纠正</button>
                 <button type="button" onClick={() => recordFeedback("已成交")}><BookOpenText size={17} />已成交</button>
               </div>
-              {feedback && <div className="feedback-notice">已记录“{feedback}”（演示模式，尚未持久化）。</div>}
+              {feedback && (
+                <div className="feedback-notice">
+                  已记录“{feedback}”（{demoMode ? "演示模式" : "当前页面会话"}，反馈持久化接口尚未接入）。
+                </div>
+              )}
             </div>
 
             {knowledgeCandidate && (
@@ -213,4 +224,3 @@ export function LeadWorkbench({ items }: { items: AssessedListing[] }) {
     </div>
   );
 }
-

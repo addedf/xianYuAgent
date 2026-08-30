@@ -38,6 +38,7 @@ export interface MarketplaceListing {
   hasPurchaseProof: boolean;
   hasAccessoryDescription: boolean;
   monitorKeywords: string[];
+  sourceUrl?: string;
   seller: SellerProfile;
 }
 
@@ -99,4 +100,3 @@ export interface MonitorTask {
   lastScanAt?: string;
   latestWatermark?: string;
 }
-

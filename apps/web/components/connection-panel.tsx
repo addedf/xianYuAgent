@@ -10,7 +10,12 @@ interface HealthResponse {
   checkedAt: string;
 }
 
-const serviceLabels = { postgresql: "PostgreSQL", redis: "Redis / BullMQ", wecom: "企业微信机器人" };
+const serviceLabels = {
+  postgresql: "PostgreSQL",
+  redis: "Redis / BullMQ",
+  "xianyu-collector": "闲鱼只读采集器",
+  wecom: "企业微信机器人",
+};
 
 export function ConnectionPanel() {
   const [health, setHealth] = useState<HealthResponse | null>(null);

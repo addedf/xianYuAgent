@@ -22,6 +22,7 @@ const listingSchema = z.object({
   hasPurchaseProof: z.boolean(),
   hasAccessoryDescription: z.boolean(),
   monitorKeywords: z.array(z.string().min(1)).min(1),
+  sourceUrl: z.url().optional(),
   seller: z.object({
     externalId: z.string().min(1),
     displayName: z.string(),
@@ -43,4 +44,3 @@ export async function POST(request: Request) {
 
   return Response.json({ assessment: assessListing(payload.data) });
 }
-

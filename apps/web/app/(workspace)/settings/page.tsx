@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { CheckCircle, LockKey, PauseCircle, ShieldCheck } from "@phosphor-icons/react/dist/ssr";
 import { ConnectionPanel } from "@/components/connection-panel";
+import { XianyuSourcePanel } from "@/components/xianyu-source-panel";
 
 export const metadata: Metadata = { title: "连接与控制" };
 
@@ -14,6 +15,7 @@ export default function SettingsPage() {
       </header>
 
       <ConnectionPanel />
+      <XianyuSourcePanel />
 
       <div className="settings-grid">
         <section className="panel settings-section">
@@ -28,6 +30,8 @@ export default function SettingsPage() {
             <div><dt>DATABASE_URL</dt><dd>PostgreSQL 用户、密码与数据库名</dd></div>
             <div><dt>REDIS_URL</dt><dd>包含本机 Redis 密码的连接串</dd></div>
             <div><dt>WECOM_WEBHOOK_URL</dt><dd>企业微信机器人通知地址</dd></div>
+            <div><dt>XIANYU_COLLECTOR_ENABLED</dt><dd>本机只读闲鱼采集器开关</dd></div>
+            <div><dt>XIANYU_COLLECTOR_URL</dt><dd>仅允许 localhost 或 127.0.0.1</dd></div>
             <div><dt>OUTBOUND_MESSAGING_ENABLED</dt><dd>闲鱼主动发送总开关，当前必须为 false</dd></div>
           </dl>
         </section>
@@ -52,11 +56,10 @@ export default function SettingsPage() {
       <section className="next-step-panel">
         <div>
           <strong>下一步：创建本地数据库并填写连接串</strong>
-          <p>完成后运行 `pnpm db:push`，再启动 Worker 验证企业微信通知重试链路。</p>
+          <p>完成后运行 `pnpm db:migrate`，再启动 Worker 验证企业微信通知重试链路。</p>
         </div>
-        <code>pnpm db:push</code>
+        <code>pnpm db:migrate</code>
       </section>
     </div>
   );
 }
-

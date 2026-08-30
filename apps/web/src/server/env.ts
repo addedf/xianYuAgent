@@ -5,6 +5,9 @@ const serverEnvSchema = z.object({
   DATABASE_URL: z.string().trim().optional().default(""),
   REDIS_URL: z.string().trim().optional().default(""),
   WECOM_WEBHOOK_URL: z.string().trim().optional().default(""),
+  XIANYU_COLLECTOR_ENABLED: z.enum(["true", "false"]).optional().default("false"),
+  XIANYU_COLLECTOR_URL: z.string().trim().optional().default("http://127.0.0.1:8000"),
+  XIANYU_COLLECTOR_DATABASE_URL: z.string().trim().optional().default(""),
   OUTBOUND_MESSAGING_ENABLED: z.enum(["true", "false"]).optional().default("false"),
 });
 
@@ -17,4 +20,3 @@ export function getServerEnv(source: NodeJS.ProcessEnv = process.env): ServerEnv
 export function isDemoMode(env = getServerEnv()): boolean {
   return env.APP_DEMO_MODE !== "false" || !env.DATABASE_URL;
 }
-

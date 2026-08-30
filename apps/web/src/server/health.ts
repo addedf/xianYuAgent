@@ -1,14 +1,47 @@
 import Redis from "ioredis";
 import postgres from "postgres";
 import { getServerEnv } from "@/src/server/env";
+import { validateLocalCollectorUrl } from "@/src/server/sources/xianyu-spider";
 
 export type ServiceState = "ready" | "not-configured" | "unavailable";
 
 export interface ServiceHealth {
-  name: "postgresql" | "redis" | "wecom";
+  name: "postgresql" | "redis" | "wecom" | "xianyu-collector";
   state: ServiceState;
   detail: string;
   latencyMs?: number;
+}
+
+async function checkXianyuCollector(enabled: boolean, collectorUrl: string): Promise<ServiceHealth> {
+  if (!enabled) {
+    return {
+      name: "xianyu-collector",
+      state: "not-configured",
+      detail: "只读采集器默认关闭；完成本地登录与数据库配置后再启用。",
+    };
+  }
+
+  const startedAt = performance.now();
+  try {
+    const response = await fetch(new URL("/auth/status", validateLocalCollectorUrl(collectorUrl)), {
+      signal: AbortSignal.timeout(2_000),
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error("collector unavailable");
+    const payload = (await response.json().catch(() => ({}))) as { logged_in?: boolean };
+    return {
+      name: "xianyu-collector",
+      state: "ready",
+      detail: payload.logged_in ? "采集服务正常，闲鱼登录态有效。" : "采集服务正常；当前为未登录或登录已过期状态。",
+      latencyMs: Math.round(performance.now() - startedAt),
+    };
+  } catch {
+    return {
+      name: "xianyu-collector",
+      state: "unavailable",
+      detail: "无法连接本机 8000 端口的只读采集服务。",
+    };
+  }
 }
 
 async function checkPostgreSql(databaseUrl: string): Promise<ServiceHealth> {
@@ -64,14 +97,16 @@ async function checkRedis(redisUrl: string): Promise<ServiceHealth> {
 
 export async function getSystemHealth(): Promise<ServiceHealth[]> {
   const env = getServerEnv();
-  const [postgresql, redis] = await Promise.all([
+  const [postgresql, redis, xianyuCollector] = await Promise.all([
     checkPostgreSql(env.DATABASE_URL),
     checkRedis(env.REDIS_URL),
+    checkXianyuCollector(env.XIANYU_COLLECTOR_ENABLED === "true", env.XIANYU_COLLECTOR_URL),
   ]);
 
   return [
     postgresql,
     redis,
+    xianyuCollector,
     {
       name: "wecom",
       state: env.WECOM_WEBHOOK_URL ? "ready" : "not-configured",
@@ -79,4 +114,3 @@ export async function getSystemHealth(): Promise<ServiceHealth[]> {
     },
   ];
 }
-
