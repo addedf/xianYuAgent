@@ -2,13 +2,13 @@ import { z } from "zod";
 import { adminApiError } from "@/src/server/auth/admin-request";
 import { getServerEnv } from "@/src/server/env";
 import {
+  cancelXianyuBrowserLogin,
   getXianyuAuthStatus,
   logoutXianyu,
+  pollXianyuBrowserLogin,
   pollXianyuQrLogin,
-  pollXianyuSmsLogin,
+  startXianyuBrowserLogin,
   startXianyuQrLogin,
-  startXianyuSmsLogin,
-  verifyXianyuSmsLogin,
 } from "@/src/server/sources/xianyu-auth";
 
 export const dynamic = "force-dynamic";
@@ -16,15 +16,25 @@ export const dynamic = "force-dynamic";
 const actionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("start") }),
   z.object({ action: z.literal("poll"), sessionId: z.string().regex(/^[a-f0-9]{32}$/i) }),
-  z.object({ action: z.literal("sms_start"), phone: z.string().regex(/^(?:\+?86)?1[3-9]\d{9}$/) }),
-  z.object({ action: z.literal("sms_poll"), sessionId: z.string().regex(/^[a-f0-9]{32}$/i) }),
-  z.object({
-    action: z.literal("sms_verify"),
-    sessionId: z.string().regex(/^[a-f0-9]{32}$/i),
-    code: z.string().regex(/^\d{4,8}$/),
-  }),
+  z.object({ action: z.literal("browser_start") }),
+  z.object({ action: z.literal("browser_poll"), sessionId: z.string().regex(/^[a-f0-9]{32}$/i) }),
+  z.object({ action: z.literal("browser_cancel"), sessionId: z.string().regex(/^[a-f0-9]{32}$/i) }),
   z.object({ action: z.literal("logout") }),
 ]);
+
+function safeErrorMessage(reason: unknown, fallback: string): string {
+  if (!(reason instanceof Error)) return fallback;
+  const safePrefixes = [
+    "闲鱼只读采集器",
+    "闲鱼采集器",
+    "闲鱼要求",
+    "XIANYU_COLLECTOR_API_TOKEN",
+    "Web 与闲鱼采集器",
+    "本地闲鱼采集器",
+    "当前闲鱼采集器版本",
+  ];
+  return safePrefixes.some((prefix) => reason.message.startsWith(prefix)) ? reason.message : fallback;
+}
 
 export async function GET(request: Request) {
   const guard = adminApiError(request);
@@ -32,7 +42,7 @@ export async function GET(request: Request) {
   try {
     return Response.json({ auth: await getXianyuAuthStatus({ env: getServerEnv() }) });
   } catch (reason) {
-    return Response.json({ error: reason instanceof Error ? reason.message : "无法读取闲鱼登录状态。" }, { status: 502 });
+    return Response.json({ error: safeErrorMessage(reason, "无法读取闲鱼登录状态。") }, { status: 502 });
   }
 }
 
@@ -52,20 +62,26 @@ export async function POST(request: Request) {
       case "poll":
         auth = await pollXianyuQrLogin(parsed.data.sessionId, dependencies);
         break;
-      case "sms_start":
-        auth = await startXianyuSmsLogin(parsed.data.phone, dependencies);
+      case "browser_start":
+        auth = await startXianyuBrowserLogin(dependencies);
         break;
-      case "sms_poll":
-        auth = await pollXianyuSmsLogin(parsed.data.sessionId, dependencies);
+      case "browser_poll":
+        auth = await pollXianyuBrowserLogin(parsed.data.sessionId, dependencies);
         break;
-      case "sms_verify":
-        auth = await verifyXianyuSmsLogin(parsed.data.sessionId, parsed.data.code, dependencies);
+      case "browser_cancel":
+        auth = await cancelXianyuBrowserLogin(parsed.data.sessionId, dependencies);
         break;
-      default:
+      case "logout":
         auth = await logoutXianyu(dependencies);
+        break;
+      default: {
+        const exhaustiveAction: never = parsed.data;
+        void exhaustiveAction;
+        return Response.json({ error: "登录操作格式不正确。" }, { status: 400 });
+      }
     }
     return Response.json({ auth });
   } catch (reason) {
-    return Response.json({ error: reason instanceof Error ? reason.message : "闲鱼登录操作失败。" }, { status: 502 });
+    return Response.json({ error: safeErrorMessage(reason, "闲鱼登录操作失败，请检查本机采集器状态。") }, { status: 502 });
   }
 }

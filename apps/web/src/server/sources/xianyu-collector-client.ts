@@ -47,7 +47,7 @@ export async function requestXianyuCollector(
       throw new Error("Web 与闲鱼采集器的内部服务鉴权失败。");
     }
     if (response.status === 409) {
-      throw new Error("闲鱼要求完成官方安全验证，请断开账号后重新扫码并按 App 提示确认。");
+      throw new Error("闲鱼要求完成官方安全验证，请重新连接账号并按官方页面或 App 提示由本人完成。");
     }
     throw new Error("本地闲鱼采集器请求失败，请检查采集器状态。");
   }

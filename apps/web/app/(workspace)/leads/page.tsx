@@ -45,10 +45,10 @@ export default async function LeadsPage() {
         <p>把商品、卖家、风险依据和经验反馈放在同一视图中，避免只看一个总分。</p>
       </header>
       {authRequired && (
-        <XianyuAuthRequiredNotice message="当前线索库只会显示已经入库的内容，无法获取新的闲鱼商品。完成扫码鉴权后，请在“连接与控制”中执行搜索并导入。" />
+        <XianyuAuthRequiredNotice message="当前线索库只会显示已经入库的内容，无法获取新的闲鱼商品。完成扫码或官方窗口登录后，请在“连接与控制”中执行搜索并导入。" />
       )}
       {authCheckError && (
-        <div className="error-state" role="alert">无法确认闲鱼登录状态，请先到“连接与控制”检查采集器并完成扫码鉴权。</div>
+        <div className="error-state" role="alert">无法确认闲鱼登录状态，请先到“连接与控制”检查采集器并完成账号连接。</div>
       )}
       {loadError && <div className="error-state" role="alert">无法读取 PostgreSQL 线索，请先到“连接”页面检查数据库配置。</div>}
       <LeadWorkbench items={items} demoMode={demoMode} />

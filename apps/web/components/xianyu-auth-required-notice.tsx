@@ -1,8 +1,8 @@
 import Link from "next/link";
-import { QrCode, WarningCircle } from "@phosphor-icons/react/dist/ssr";
+import { SignIn, WarningCircle } from "@phosphor-icons/react/dist/ssr";
 
 export function XianyuAuthRequiredNotice({
-  message = "当前没有可用的闲鱼登录会话，系统不会发起商品搜索。请使用闲鱼 App 扫码并确认后，再获取真实商品。",
+  message = "当前没有可用的闲鱼登录会话，系统不会发起商品搜索。请扫码，或在闲鱼官方窗口由本人完成登录后，再获取真实商品。",
 }: {
   message?: string;
 }) {
@@ -14,8 +14,8 @@ export function XianyuAuthRequiredNotice({
         <p>{message}</p>
       </div>
       <Link className="button button-secondary" href="/settings#xianyu-account">
-        <QrCode size={17} aria-hidden="true" />
-        前往扫码鉴权
+        <SignIn size={17} aria-hidden="true" />
+        前往账号连接
       </Link>
     </section>
   );

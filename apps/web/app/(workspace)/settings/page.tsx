@@ -62,7 +62,7 @@ export default function SettingsPage() {
           <strong>当前闭环：登录闲鱼后搜索一页真实商品</strong>
           <p>先确认账号显示“已连接”，再使用上方搜索入口；商品会写入 PostgreSQL 并显示原帖链接。</p>
         </div>
-        <code>扫码登录 → 搜索并导入</code>
+        <code>连接闲鱼账号 → 搜索并导入</code>
       </section>
     </div>
   );
