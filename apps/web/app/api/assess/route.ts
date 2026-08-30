@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { assessListing } from "@/src/domain/scoring";
+import { adminApiError } from "@/src/server/auth/admin-request";
 
 const listingSchema = z.object({
   id: z.string().min(1),
@@ -37,6 +38,8 @@ const listingSchema = z.object({
 });
 
 export async function POST(request: Request) {
+  const guard = adminApiError(request, true);
+  if (guard) return guard;
   const payload = listingSchema.safeParse(await request.json().catch(() => null));
   if (!payload.success) {
     return Response.json({ error: "商品数据格式不正确。", issues: payload.error.issues }, { status: 400 });

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { PauseCircle, Scan, ShieldCheck } from "@phosphor-icons/react/dist/ssr";
 import { MobileNav } from "./mobile-nav";
 import { SidebarNav } from "./sidebar-nav";
+import { AdminLogoutButton } from "./admin-logout-button";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   return (
@@ -31,6 +32,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <ShieldCheck size={17} weight="fill" aria-hidden="true" />
           <span>本地运行 · 凭据不入日志</span>
         </div>
+        <AdminLogoutButton />
       </aside>
 
       <div className="app-content">

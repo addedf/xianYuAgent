@@ -1,7 +1,10 @@
 import { getServerEnv } from "@/src/server/env";
 import { sendWeComMarkdown } from "@/src/server/notifications/wecom";
+import { adminApiError } from "@/src/server/auth/admin-request";
 
-export async function POST() {
+export async function POST(request: Request) {
+  const guard = adminApiError(request, true);
+  if (guard) return guard;
   const { WECOM_WEBHOOK_URL } = getServerEnv();
   if (!WECOM_WEBHOOK_URL) {
     return Response.json({ error: "WECOM_WEBHOOK_URL 尚未配置。" }, { status: 400 });
@@ -25,4 +28,3 @@ export async function POST() {
     );
   }
 }
-

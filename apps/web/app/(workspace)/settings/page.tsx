@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { CheckCircle, LockKey, PauseCircle, ShieldCheck } from "@phosphor-icons/react/dist/ssr";
 import { ConnectionPanel } from "@/components/connection-panel";
 import { XianyuSourcePanel } from "@/components/xianyu-source-panel";
+import { XianyuAccountPanel } from "@/components/xianyu-account-panel";
 
 export const metadata: Metadata = { title: "连接与控制" };
 
@@ -11,10 +12,11 @@ export default function SettingsPage() {
       <header className="page-header">
         <p className="context-line">本地优先 · 凭据隔离 · 可随时暂停</p>
         <h1>连接与控制</h1>
-        <p>先完成本机 PostgreSQL、Redis 与企业微信通知，再进入闲鱼真实账号的隔离 PoC。</p>
+        <p>先验证本机服务，再在 Web 内连接闲鱼账号并搜索真实发布商品。</p>
       </header>
 
       <ConnectionPanel />
+      <XianyuAccountPanel />
       <XianyuSourcePanel />
 
       <div className="settings-grid">
@@ -30,8 +32,10 @@ export default function SettingsPage() {
             <div><dt>DATABASE_URL</dt><dd>PostgreSQL 用户、密码与数据库名</dd></div>
             <div><dt>REDIS_URL</dt><dd>包含本机 Redis 密码的连接串</dd></div>
             <div><dt>WECOM_WEBHOOK_URL</dt><dd>企业微信机器人通知地址</dd></div>
+            <div><dt>ADMIN_PASSWORD / SESSION_SECRET</dt><dd>本机管理员密码与签名会话密钥</dd></div>
             <div><dt>XIANYU_COLLECTOR_ENABLED</dt><dd>本机只读闲鱼采集器开关</dd></div>
             <div><dt>XIANYU_COLLECTOR_URL</dt><dd>仅允许 localhost 或 127.0.0.1</dd></div>
+            <div><dt>XIANYU_COLLECTOR_API_TOKEN</dt><dd>Web 与采集器之间的共享服务令牌</dd></div>
             <div><dt>OUTBOUND_MESSAGING_ENABLED</dt><dd>闲鱼主动发送总开关，当前必须为 false</dd></div>
           </dl>
         </section>
@@ -55,10 +59,10 @@ export default function SettingsPage() {
 
       <section className="next-step-panel">
         <div>
-          <strong>下一步：创建本地数据库并填写连接串</strong>
-          <p>完成后运行 `pnpm db:migrate`，再启动 Worker 验证企业微信通知重试链路。</p>
+          <strong>当前闭环：登录闲鱼后搜索一页真实商品</strong>
+          <p>先确认账号显示“已连接”，再使用上方搜索入口；商品会写入 PostgreSQL 并显示原帖链接。</p>
         </div>
-        <code>pnpm db:migrate</code>
+        <code>扫码登录 → 搜索并导入</code>
       </section>
     </div>
   );

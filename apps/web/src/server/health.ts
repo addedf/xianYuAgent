@@ -1,7 +1,8 @@
 import Redis from "ioredis";
 import postgres from "postgres";
 import { getServerEnv } from "@/src/server/env";
-import { validateLocalCollectorUrl } from "@/src/server/sources/xianyu-spider";
+import type { ServerEnv } from "@/src/server/env";
+import { getXianyuAuthStatus } from "@/src/server/sources/xianyu-auth";
 
 export type ServiceState = "ready" | "not-configured" | "unavailable";
 
@@ -12,8 +13,8 @@ export interface ServiceHealth {
   latencyMs?: number;
 }
 
-async function checkXianyuCollector(enabled: boolean, collectorUrl: string): Promise<ServiceHealth> {
-  if (!enabled) {
+async function checkXianyuCollector(env: ServerEnv): Promise<ServiceHealth> {
+  if (env.XIANYU_COLLECTOR_ENABLED !== "true" || !env.XIANYU_COLLECTOR_API_TOKEN) {
     return {
       name: "xianyu-collector",
       state: "not-configured",
@@ -23,16 +24,11 @@ async function checkXianyuCollector(enabled: boolean, collectorUrl: string): Pro
 
   const startedAt = performance.now();
   try {
-    const response = await fetch(new URL("/auth/status", validateLocalCollectorUrl(collectorUrl)), {
-      signal: AbortSignal.timeout(2_000),
-      cache: "no-store",
-    });
-    if (!response.ok) throw new Error("collector unavailable");
-    const payload = (await response.json().catch(() => ({}))) as { logged_in?: boolean };
+    const auth = await getXianyuAuthStatus({ env, timeoutMs: 2_000 });
     return {
       name: "xianyu-collector",
       state: "ready",
-      detail: payload.logged_in ? "采集服务正常，闲鱼登录态有效。" : "采集服务正常；当前为未登录或登录已过期状态。",
+      detail: auth.loggedIn ? "采集服务正常，闲鱼登录态有效。" : "采集服务正常；当前为未登录或登录已过期状态。",
       latencyMs: Math.round(performance.now() - startedAt),
     };
   } catch {
@@ -100,7 +96,7 @@ export async function getSystemHealth(): Promise<ServiceHealth[]> {
   const [postgresql, redis, xianyuCollector] = await Promise.all([
     checkPostgreSql(env.DATABASE_URL),
     checkRedis(env.REDIS_URL),
-    checkXianyuCollector(env.XIANYU_COLLECTOR_ENABLED === "true", env.XIANYU_COLLECTOR_URL),
+    checkXianyuCollector(env),
   ]);
 
   return [

@@ -10,6 +10,8 @@
 - 企业微信机器人：Webhook 严格校验、超时、错误归一化与测试接口。
 - PostgreSQL 数据模型和 Redis/BullMQ 后台任务基座。
 - 兼容独立本地 `xianyu_spider` 搜索服务的只读导入适配器；Cookie 不进入 Web 项目。
+- Web 管理员签名会话、Web↔采集器服务令牌，以及脱敏二维码登录代理。
+- 闲鱼登录成功后执行真实搜索，并在设置页回显本次商品标题、价格、地区、发布时间与原帖。
 - 演示模式：不配置数据库和 Redis 也能先查看界面与评分逻辑。
 
 ## 本机要求
@@ -22,12 +24,13 @@
 ## 启动
 
 1. 复制 `apps/web/.env.example` 为 `apps/web/.env.local`。
-2. 填写 `DATABASE_URL`、`REDIS_URL`；企业微信联调时再填写 `WECOM_WEBHOOK_URL`。
+2. 填写 `DATABASE_URL`、`REDIS_URL`、`ADMIN_PASSWORD`、`ADMIN_SESSION_SECRET` 和 `XIANYU_COLLECTOR_API_TOKEN`；企业微信联调时再填写 `WECOM_WEBHOOK_URL`。
 3. 首次建表：在 `apps/web` 目录运行 `pnpm db:migrate`，执行仓库内已生成的版本化迁移。
 4. 在项目根目录运行 `powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1`。
-5. 浏览器访问 `http://localhost:3000`。
+5. 采集器 `.env` 配置同一个 `XIANYU_COLLECTOR_API_TOKEN`，并只监听 `127.0.0.1:8000`。
+6. 浏览器访问 `http://localhost:3000`，管理员登录后在“连接与控制”扫码连接闲鱼。
 
-真实闲鱼数据接入步骤与授权风险见 [`docs/XIANYU_COLLECTOR.md`](docs/XIANYU_COLLECTOR.md)。
+日常启动命令见 [`docs/STARTUP.md`](docs/STARTUP.md)；真实闲鱼数据接入步骤与授权风险见 [`docs/XIANYU_COLLECTOR.md`](docs/XIANYU_COLLECTOR.md)。
 
 不填写连接信息时，应用自动进入演示模式，便于先验收页面和规则。
 

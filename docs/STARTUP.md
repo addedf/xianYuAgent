@@ -1,0 +1,93 @@
+# Windows 本地启动指南
+
+本文记录日常启动闲鱼采集器和 Web 管理端所需的命令。两个服务需要分别占用一个 PowerShell 窗口，并在使用期间保持运行。
+
+## 启动前确认
+
+- 项目目录：`D:\A-projeck\xianYuAgent`
+- 采集器目录：`D:\A-projeck\xianYuAgent\.local\xianyu_spider`
+- 采集器配置：`.local\xianyu_spider\.env`
+- Web 配置：`apps\web\.env.local`
+- Web 与采集器的 `XIANYU_COLLECTOR_API_TOKEN` 必须一致。
+
+配置文件包含密码和服务令牌，不要提交到 Git，也不要复制到聊天或日志中。
+
+## 第一步：启动闲鱼采集器
+
+打开第一个 PowerShell 窗口，执行：
+
+```powershell
+Set-Location -LiteralPath 'D:\A-projeck\xianYuAgent\.local\xianyu_spider'
+
+& '.\.venv\Scripts\python.exe' '.\spider.py' serve --host 127.0.0.1 --port 8000
+```
+
+出现以下内容表示启动成功：
+
+```text
+Uvicorn running on http://127.0.0.1:8000
+```
+
+采集器根地址 `http://127.0.0.1:8000/` 返回 `404 Not Found` 是正常现象，因为根路径没有网页。不要关闭这个 PowerShell 窗口。
+
+## 第二步：启动 Web 管理端
+
+打开第二个 PowerShell 窗口，执行：
+
+```powershell
+Set-Location -LiteralPath 'D:\A-projeck\xianYuAgent'
+
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\scripts\dev.ps1'
+```
+
+出现 `Ready` 和以下地址表示启动成功：
+
+```text
+http://127.0.0.1:3000
+```
+
+## 第三步：登录和获取闲鱼商品
+
+1. 浏览器打开 `http://127.0.0.1:3000/login`。
+2. 管理员密码查看 `apps\web\.env.local` 中的 `ADMIN_PASSWORD`，不要把密码填写到闲鱼登录页。
+3. 登录 Web 后进入“连接与控制”。
+4. 如果闲鱼登录状态无效，使用闲鱼 App 扫描页面显示的二维码，并由本人完成平台要求的验证。
+5. 登录状态有效后，在真实数据入口填写关键词等条件并发起搜索；结果来自本机采集器的实时闲鱼请求，不使用演示数据代替。
+
+## 停止服务
+
+分别切换到两个运行服务的 PowerShell 窗口，按 `Ctrl+C`。看到终止提示后即可关闭窗口。
+
+## 常见问题
+
+### 无法识别 Python 路径
+
+虚拟环境位于采集器目录内部，正确路径是：
+
+```text
+D:\A-projeck\xianYuAgent\.local\xianyu_spider\.venv\Scripts\python.exe
+```
+
+进入采集器目录后应使用 `.\.venv\Scripts\python.exe`，不要使用 `..\.venv\Scripts\python.exe`。
+
+### 8000 或 3000 端口已被占用
+
+先确认是否已经启动过服务：
+
+```powershell
+Get-NetTCPConnection -State Listen -LocalPort 8000,3000 -ErrorAction SilentlyContinue |
+    Select-Object LocalAddress, LocalPort, OwningProcess
+```
+
+如果已经有正确的服务在监听，不要重复启动。需要停止旧进程时，优先回到原来的 PowerShell 窗口按 `Ctrl+C`。
+
+### Web 能打开但采集器未连接
+
+- 确认第一个 PowerShell 窗口仍在运行。
+- 确认采集器监听的是 `127.0.0.1:8000`。
+- 确认两个 `.env` 文件中的 `XIANYU_COLLECTOR_API_TOKEN` 完全一致。
+- 修改配置文件后，需要停止并重新启动对应服务。
+
+### 闲鱼搜索要求平台验证
+
+这是闲鱼官方的账号验证流程。回到“连接与控制”重新扫码并按页面提示完成人工验证；本项目不会绕过验证码或平台风控。

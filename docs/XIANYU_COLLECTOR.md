@@ -2,7 +2,7 @@
 
 ## 采用的边界
 
-Web 项目不直接保存闲鱼 Cookie，也不在 Next.js 进程中实现扫码、核身或反爬逻辑。独立本地采集器只负责用户本人登录后的低频搜索；Web 只调用本机 API，并从本机 PostgreSQL 读取新增记录。
+Web 项目不保存闲鱼 Cookie 或 Token，也不实现核身或反爬逻辑。独立本地采集器负责通过闲鱼官方页面完成二维码/短信登录和用户本人登录后的低频搜索；Web 只代理经过管理员鉴权的登录操作、调用本机 API，并从本机 PostgreSQL 读取新增记录。
 
 当前适配器兼容 `superboyyy/xianyu_spider` 的两个公开契约：
 
@@ -28,6 +28,7 @@ APP_DEMO_MODE=false
 DATABASE_URL=postgresql://本地用户:本地密码@127.0.0.1:5432/xianyu_agent
 XIANYU_COLLECTOR_ENABLED=true
 XIANYU_COLLECTOR_URL=http://127.0.0.1:8000
+XIANYU_COLLECTOR_API_TOKEN=请生成至少32位随机服务令牌
 # 使用同一个数据库时保持为空
 XIANYU_COLLECTOR_DATABASE_URL=
 OUTBOUND_MESSAGING_ENABLED=false
@@ -57,11 +58,19 @@ python -m playwright install chromium
 
 ```dotenv
 DATABASE_URL=postgresql://本地用户:本地密码@127.0.0.1:5432/xianyu_agent
+XIANYU_COLLECTOR_API_TOKEN=与Web端完全一致的随机服务令牌
 ```
 
 ## 3. 由用户本人登录
 
-优先打开官方页面，由用户本人扫码并完成可能出现的核身：
+先启动 Web 和采集器，再打开 Web 的“连接与控制 → 闲鱼账号连接”。当前提供两种入口：
+
+- 扫码登录：生成二维码后每 2 秒串行轮询状态；普通状态轮询不会再清空当前二维码。
+- 验证码登录：填写中国大陆手机号并发送验证码，采集器会打开可见的闲鱼官方登录窗口；收到短信后在 Web 输入验证码。如官方页出现滑块、人脸或其它安全验证，必须由用户在该窗口正常完成。
+
+手机号和验证码只在这次登录请求中转交给本机采集器，不写数据库、不写普通日志，也不会出现在接口响应。短信发送有 60 秒本机频率限制，登录会话 10 分钟过期。项目不会绕过闲鱼官方验证。
+
+命令行官方页面登录仍可作为本机备用方式：
 
 ```powershell
 python spider.py login --browser
@@ -72,7 +81,8 @@ python spider.py login --browser
 ## 4. 只监听本机地址
 
 ```powershell
-python spider.py --host 127.0.0.1 --port 8000
+Set-Location -LiteralPath 'D:\A-projeck\xianYuAgent\.local\xianyu_spider'
+& '.\.venv\Scripts\python.exe' '.\spider.py' serve --host 127.0.0.1 --port 8000
 ```
 
 访问 `http://127.0.0.1:8000/docs` 可检查采集器接口。Web 的“连接与控制”页面应显示“闲鱼只读采集器”已连接。
@@ -82,7 +92,8 @@ python spider.py --host 127.0.0.1 --port 8000
 打开 Web 的“连接”页面，在“闲鱼真实数据入口”填写关键词、品类、城市和价格范围，点击“搜索并导入”。流程为：
 
 ```text
-Web → 本机 /search/ → 采集器写 xianyu_products
+管理员浏览器 → Web 脱敏登录代理 → 本机 /auth/*（服务令牌）
+Web → 本机 /search/（服务令牌）→ 采集器写 xianyu_products
     → Web 按 new_record_ids 读取 → 规范化与去重
     → marketplace_listings + assessments → 线索审阅
 ```
@@ -95,4 +106,6 @@ Web → 本机 /search/ → 采集器写 xianyu_products
 - “无法连接本机 8000 端口”：确认采集器使用 `127.0.0.1:8000` 启动。
 - “无法读取 xianyu_products”：确认采集器安装了 `asyncpg`，并且两个进程指向同一个数据库；或填写 `XIANYU_COLLECTOR_DATABASE_URL`。
 - 搜索成功但新增为 0：该链接已经被采集器去重，不会重复导入。
+- 二维码闪现后空白：确认 Web 已重启到最新代码；当前实现会保留同一扫码会话的原二维码，并在过期、取消、成功或额外验证时正确清理/替换。
+- 验证码收不到：等待 60 秒后重试，并检查弹出的闲鱼官方窗口是否要求先完成安全验证。
 - 登录已过期：回到采集器目录重新执行 `python spider.py login --browser`，不要尝试绕过验证。

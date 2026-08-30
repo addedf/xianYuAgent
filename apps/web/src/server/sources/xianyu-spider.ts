@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { MarketplaceListing } from "@/src/domain/listing";
 import type { ServerEnv } from "@/src/server/env";
+import { getXianyuAuthStatus } from "./xianyu-auth";
+import { requestXianyuCollector } from "./xianyu-collector-client";
+
+export { validateLocalCollectorUrl } from "./xianyu-collector-client";
 
 export const xianyuSearchInputSchema = z
   .object({
@@ -29,6 +33,7 @@ const collectorResponseSchema = z.object({
   total_results: z.number().int().nonnegative(),
   new_records: z.number().int().nonnegative(),
   new_record_ids: z.array(z.number().int().positive()),
+  record_ids: z.array(z.number().int().positive()).optional(),
 });
 
 const sourceProductSchema = z.object({
@@ -52,6 +57,17 @@ export interface XianyuImportResult {
   newRecords: number;
   importedRecords: number;
   skippedRecords: number;
+  items: XianyuImportedItem[];
+}
+
+export interface XianyuImportedItem {
+  externalId: string;
+  title: string;
+  price: number;
+  region: string;
+  publishedAt: string;
+  sourceUrl?: string;
+  imageUrl?: string;
 }
 
 interface ImportDependencies {
@@ -112,21 +128,6 @@ function safeHttpUrl(value: string): string | undefined {
   }
 }
 
-export function validateLocalCollectorUrl(value: string): URL {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new Error("闲鱼采集器地址不是有效 URL。");
-  }
-
-  const localHosts = new Set(["127.0.0.1", "localhost", "[::1]"]);
-  if (!localHosts.has(url.hostname) || !["http:", "https:"].includes(url.protocol) || url.username || url.password) {
-    throw new Error("闲鱼采集器只允许连接本机回环地址，且地址中不能包含账号密码。");
-  }
-  return url;
-}
-
 export function normalizeXianyuProduct(productValue: unknown, input: XianyuSearchInput): MarketplaceListing | null {
   const product = sourceProductSchema.parse(productValue);
   const price = parsePrice(product.price);
@@ -176,12 +177,11 @@ export function parseSourceProduct(value: unknown): SourceProduct {
 }
 
 async function requestCollector(
-  collectorUrl: string,
+  env: ServerEnv,
   input: XianyuSearchInput,
   fetcher: typeof fetch,
 ): Promise<CollectorResponse> {
-  const baseUrl = validateLocalCollectorUrl(collectorUrl);
-  const response = await fetcher(new URL("/search/", baseUrl), {
+  const payload = await requestXianyuCollector("/search/", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -194,12 +194,8 @@ async function requestCollector(
       city: input.city,
       publish_days: input.publishDays,
     }),
-    signal: AbortSignal.timeout(60_000),
-    cache: "no-store",
-  });
-
-  if (!response.ok) throw new Error("本地闲鱼采集器搜索失败，请检查登录态和采集器终端输出。");
-  const parsed = collectorResponseSchema.safeParse(await response.json());
+  }, { env, fetcher });
+  const parsed = collectorResponseSchema.safeParse(payload);
   if (!parsed.success) throw new Error("本地闲鱼采集器返回了无法识别的响应。");
   return parsed.data;
 }
@@ -210,10 +206,16 @@ export async function importXianyuSearch(inputValue: unknown, dependencies: Impo
   if (env.XIANYU_COLLECTOR_ENABLED !== "true") throw new Error("闲鱼只读采集器尚未启用。");
   if (!env.DATABASE_URL) throw new Error("DATABASE_URL 尚未配置，不能导入真实商品。");
 
-  const collectorResult = await requestCollector(env.XIANYU_COLLECTOR_URL, input, dependencies.fetcher ?? fetch);
+  const fetcher = dependencies.fetcher ?? fetch;
+  const auth = await getXianyuAuthStatus({ env, fetcher });
+  if (!auth.loggedIn) throw new Error("请先在连接与控制页面完成闲鱼账号登录。");
+
+  const collectorResult = await requestCollector(env, input, fetcher);
+  if (!collectorResult.logged_in) throw new Error("闲鱼登录态已失效，请重新连接账号。");
   const productDatabaseUrl = env.XIANYU_COLLECTOR_DATABASE_URL || env.DATABASE_URL;
   const loadProducts = dependencies.loadProducts ?? (await import("./xianyu-spider-persistence")).loadSourceProducts;
-  const products = await loadProducts(collectorResult.new_record_ids, productDatabaseUrl);
+  const resultIds = collectorResult.record_ids?.length ? collectorResult.record_ids : collectorResult.new_record_ids;
+  const products = await loadProducts(resultIds, productDatabaseUrl);
   const normalized = products
     .map((product) => normalizeXianyuProduct(product, input))
     .filter((listing): listing is MarketplaceListing => listing !== null);
@@ -227,5 +229,14 @@ export async function importXianyuSearch(inputValue: unknown, dependencies: Impo
     newRecords: collectorResult.new_records,
     importedRecords,
     skippedRecords: Math.max(0, products.length - normalized.length),
+    items: normalized.slice(0, 20).map((listing) => ({
+      externalId: listing.externalId,
+      title: listing.title,
+      price: listing.price,
+      region: listing.region,
+      publishedAt: listing.publishedAt,
+      sourceUrl: listing.sourceUrl,
+      imageUrl: listing.imageUrls[0],
+    })),
   };
 }

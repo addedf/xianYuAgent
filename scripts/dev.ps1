@@ -15,5 +15,11 @@ if (Test-Path -LiteralPath $localPnpm) {
     exit $LASTEXITCODE
 }
 
-throw "未找到 pnpm。请安装 Node.js 20.9+ 与 pnpm，然后重新运行本脚本。"
+$nodeCommand = Get-Command node -ErrorAction SilentlyContinue
+$nextCli = Join-Path $webRoot "node_modules\next\dist\bin\next"
+if ($nodeCommand -and (Test-Path -LiteralPath $nextCli)) {
+    & $nodeCommand.Source $nextCli dev --hostname 127.0.0.1
+    exit $LASTEXITCODE
+}
 
+throw "Unable to start the web app. Install Node.js 20.9+ and pnpm, then run pnpm install."
