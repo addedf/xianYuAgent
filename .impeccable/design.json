@@ -1,0 +1,106 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-30T12:00:00+08:00",
+  "title": "Design System: 闲鱼二奢机会雷达",
+  "extensions": {
+    "colorMeta": {
+      "harbor-blue": {
+        "role": "primary",
+        "displayName": "深海仪表蓝",
+        "canonical": "oklch(0.45 0.086 230)",
+        "tonalRamp": ["oklch(0.15 0.086 230)", "oklch(0.25 0.086 230)", "oklch(0.35 0.086 230)", "oklch(0.45 0.086 230)", "oklch(0.58 0.075 230)", "oklch(0.7 0.06 230)", "oklch(0.84 0.045 230)", "oklch(0.95 0.02 230)"]
+      },
+      "canvas": {
+        "role": "neutral",
+        "displayName": "冷灰画布",
+        "canonical": "oklch(0.982 0.002 230)",
+        "tonalRamp": ["oklch(0.15 0.002 230)", "oklch(0.28 0.002 230)", "oklch(0.42 0.002 230)", "oklch(0.56 0.002 230)", "oklch(0.68 0.002 230)", "oklch(0.8 0.002 230)", "oklch(0.9 0.002 230)", "oklch(0.982 0.002 230)"]
+      },
+      "success": {
+        "role": "semantic",
+        "displayName": "验证绿",
+        "canonical": "oklch(0.43 0.105 155)",
+        "tonalRamp": ["oklch(0.15 0.105 155)", "oklch(0.25 0.105 155)", "oklch(0.35 0.105 155)", "oklch(0.43 0.105 155)", "oklch(0.56 0.09 155)", "oklch(0.7 0.07 155)", "oklch(0.84 0.05 155)", "oklch(0.95 0.02 155)"]
+      },
+      "warning": {
+        "role": "semantic",
+        "displayName": "复核琥珀",
+        "canonical": "oklch(0.55 0.125 72)",
+        "tonalRamp": ["oklch(0.15 0.125 72)", "oklch(0.25 0.125 72)", "oklch(0.38 0.125 72)", "oklch(0.55 0.125 72)", "oklch(0.66 0.1 72)", "oklch(0.76 0.08 72)", "oklch(0.86 0.055 72)", "oklch(0.95 0.025 72)"]
+      },
+      "danger": {
+        "role": "semantic",
+        "displayName": "风险红",
+        "canonical": "oklch(0.5 0.15 28)",
+        "tonalRamp": ["oklch(0.15 0.15 28)", "oklch(0.25 0.15 28)", "oklch(0.36 0.15 28)", "oklch(0.5 0.15 28)", "oklch(0.62 0.12 28)", "oklch(0.74 0.09 28)", "oklch(0.86 0.06 28)", "oklch(0.95 0.025 28)"]
+      }
+    },
+    "typographyMeta": {
+      "headline": { "displayName": "页面标题", "purpose": "每页唯一主标题。" },
+      "body": { "displayName": "工作台正文", "purpose": "说明、证据与操作上下文。" },
+      "label": { "displayName": "紧凑标签", "purpose": "导航、状态、表头与表单标签。" }
+    },
+    "shadows": [],
+    "motion": [
+      { "name": "state-fast", "value": "180ms cubic-bezier(0.16, 1, 0.3, 1)", "purpose": "选择、Hover 与状态反馈。" }
+    ],
+    "breakpoints": [
+      { "name": "mobile", "value": "620px" },
+      { "name": "navigation-collapse", "value": "820px" },
+      { "name": "compact-desktop", "value": "1100px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "每屏唯一主要动作。",
+      "html": "<button class=\"ds-btn-primary\">审阅新线索</button>",
+      "css": ".ds-btn-primary{min-height:38px;border:0;border-radius:7px;background:var(--primary);color:var(--surface);padding:0 14px;font:650 14px var(--font-ui);transition:background 180ms cubic-bezier(.16,1,.3,1)}.ds-btn-primary:hover{background:var(--primary-strong)}.ds-btn-primary:focus-visible{outline:3px solid color-mix(in oklch,var(--primary),transparent 55%);outline-offset:2px}"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "次要与工具动作。",
+      "html": "<button class=\"ds-btn-secondary\">重新检查</button>",
+      "css": ".ds-btn-secondary{min-height:38px;border:1px solid var(--border-strong);border-radius:7px;background:var(--surface);color:var(--ink);padding:0 14px;font:650 14px var(--font-ui)}.ds-btn-secondary:hover{background:var(--surface-subtle)}.ds-btn-secondary:focus-visible{outline:3px solid color-mix(in oklch,var(--primary),transparent 55%);outline-offset:2px}"
+    },
+    {
+      "name": "Risk Chip",
+      "kind": "chip",
+      "refersTo": "status-chip",
+      "description": "同时使用状态点、文字、边界和语义色。",
+      "html": "<span class=\"ds-risk-chip\"><span></span>信息不足</span>",
+      "css": ".ds-risk-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--warning);border-radius:999px;background:var(--warning-soft);color:var(--warning);padding:5px 8px;font:680 10px var(--font-ui)}.ds-risk-chip>span{width:6px;height:6px;border-radius:50%;background:currentColor}"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "description": "结构化经验录入字段。",
+      "html": "<label class=\"ds-field\">标题<input placeholder=\"例如：日志型补拍要求\"></label>",
+      "css": ".ds-field{display:flex;flex-direction:column;gap:4px;color:var(--ink-soft);font:650 10px var(--font-ui)}.ds-field input{border:1px solid var(--border-strong);border-radius:7px;background:var(--surface);color:var(--ink);padding:8px 9px;font:400 11px var(--font-ui)}.ds-field input:focus-visible{outline:3px solid color-mix(in oklch,var(--primary),transparent 55%);outline-offset:2px}.ds-field input::placeholder{color:var(--muted);opacity:1}"
+    },
+    {
+      "name": "Selected Navigation",
+      "kind": "nav",
+      "description": "低对比蓝色面表达当前位置。",
+      "html": "<a class=\"ds-nav-active\" href=\"#\">线索审阅</a>",
+      "css": ".ds-nav-active{display:flex;min-height:42px;align-items:center;border-radius:7px;background:var(--primary-soft);color:var(--primary-strong);padding:0 10px;font:650 14px var(--font-ui);text-decoration:none}.ds-nav-active:focus-visible{outline:3px solid color-mix(in oklch,var(--primary),transparent 55%);outline-offset:2px}"
+    }
+  ],
+  "narrative": {
+    "northStar": "鉴定台上的证据板",
+    "overview": "明亮、中性、高对比的产品工作台。深海蓝只承担操作、当前选择和导航定位；每个结论必须回到证据、缺失信息和人工反馈。",
+    "keyCharacteristics": ["数据和判断依据使用清晰行列", "风险状态不只依赖颜色", "人工暂停与版本回滚持续可达", "桌面侧栏与移动底部导航"],
+    "rules": [
+      { "name": "The One Instrument Rule", "body": "深海蓝只用于动作、选择和当前定位。", "section": "colors" },
+      { "name": "The Semantic Color Rule", "body": "语义色必须同时出现文字或符号。", "section": "colors" },
+      { "name": "The Data First Rule", "body": "金额、评分、数量和版本必须易于扫描。", "section": "typography" },
+      { "name": "The Flat Evidence Rule", "body": "判断依据、规则版本和反馈处于同一可比较平面。", "section": "elevation" }
+    ],
+    "dos": ["Do 同时展示总分、分项评分、证据和信息缺口。", "Do 让暂停、人工接管、纠正和版本回滚持续可达。", "Do 保证 WCAG 2.2 AA 对比度、键盘焦点和减少动态效果支持。"],
+    "donts": ["Don't 做成廉价爬虫脚本后台。", "Don't 使用浮夸的奢侈品电商金黑风。", "Don't 使用满屏炫光、渐变和 AI 科技感。", "Don't 堆叠看不清判断依据的卡片看板。"]
+  }
+}
