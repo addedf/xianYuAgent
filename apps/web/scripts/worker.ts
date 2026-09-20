@@ -1,8 +1,11 @@
+import nextEnv from "@next/env";
 import { Worker } from "bullmq";
 import { assessedDemoListings } from "../src/data/demo";
 import { getServerEnv } from "../src/server/env";
 import { formatLeadNotification, sendWeComMarkdown } from "../src/server/notifications/wecom";
 import { createRedisConnection, QUEUE_NAME, type WeComNotificationJob } from "../src/server/queue";
+
+nextEnv.loadEnvConfig(process.cwd());
 
 const env = getServerEnv();
 const connection = createRedisConnection();
@@ -43,4 +46,3 @@ process.once("SIGINT", shutdown);
 process.once("SIGTERM", shutdown);
 
 console.info(`[worker] listening queue=${QUEUE_NAME}`);
-

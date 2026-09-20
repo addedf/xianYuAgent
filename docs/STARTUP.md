@@ -2,6 +2,88 @@
 
 本文记录日常启动闲鱼采集器和 Web 管理端所需的命令。两个服务需要分别占用一个 PowerShell 窗口，并在使用期间保持运行。
 
+## macOS 本机真实模式
+
+本仓库在 macOS 上使用项目目录下的本地服务进程，真实模式不使用演示数据。首次准备完成后，每次启动按下面顺序打开四个终端窗口；所有服务只监听回环地址。
+
+### 1. 启动 PostgreSQL 与 Redis
+
+```bash
+cd /Users/ricardo/Documents/A-project/xianYuAgent
+
+# PostgreSQL（首次准备时已 initdb；不要重复执行 initdb）
+.local/services/postgres/bin/pg_ctl \
+  -D .local/services/data/postgres \
+  -l .local/runtime/postgres.log \
+  -o "-p 5432 -h 127.0.0.1" start
+
+# Redis（密码保存在 Git 忽略的 .local/runtime/redis-pass）
+.local/services/redis/bin/redis-server .local/runtime/redis.conf --daemonize yes
+```
+
+如果服务已经运行，先用 `lsof -nP -iTCP:5432,6379 -sTCP:LISTEN` 检查，不要重复启动。
+
+### 2. 迁移 Web 数据库
+
+```bash
+cd /Users/ricardo/Documents/A-project/xianYuAgent
+pnpm --dir apps/web db:migrate
+```
+
+真实配置位于 Git 忽略的 `apps/web/.env.local`，其中应满足：
+
+```dotenv
+APP_DEMO_MODE=false
+DATABASE_URL=postgresql://xianyu@127.0.0.1:5432/xianyu_agent
+REDIS_URL=redis://:本机Redis密码@127.0.0.1:6379/0
+XIANYU_COLLECTOR_ENABLED=true
+XIANYU_COLLECTOR_URL=http://127.0.0.1:8000
+XIANYU_COLLECTOR_DATABASE_URL=postgresql://xianyu@127.0.0.1:5432/xianyu_agent
+OUTBOUND_MESSAGING_ENABLED=false
+```
+
+### 3. 启动闲鱼采集器
+
+```bash
+cd /Users/ricardo/Documents/A-project/xianYuAgent/.local/xianyu_spider
+DATABASE_URL='postgresql://xianyu@127.0.0.1:5432/xianyu_agent' \
+XIANYU_COLLECTOR_API_TOKEN="$(sed -n 's/^XIANYU_COLLECTOR_API_TOKEN=//p' ../../apps/web/.env.local)" \
+.venv/bin/python spider.py serve --host 127.0.0.1 --port 8000
+```
+
+打开 `http://127.0.0.1:8000/docs` 可检查接口。采集器已启用 `x-xianyu-service-token` 校验，不能省略该请求头。
+
+### 4. 启动 Web 与后台 worker
+
+分别在两个终端执行：
+
+```bash
+cd /Users/ricardo/Documents/A-project/xianYuAgent
+pnpm dev
+```
+
+```bash
+cd /Users/ricardo/Documents/A-project/xianYuAgent
+pnpm worker
+```
+
+浏览器访问 `http://127.0.0.1:3000/login`，管理员密码从 `apps/web/.env.local` 读取。登录后进入“连接与控制”，再在闲鱼官方窗口本人完成扫码、短信或平台要求的安全验证。
+
+### 5. 停止服务
+
+Web、worker 和采集器所在终端按 `Ctrl+C`；PostgreSQL 使用：
+
+```bash
+cd /Users/ricardo/Documents/A-project/xianYuAgent
+.local/services/postgres/bin/pg_ctl -D .local/services/data/postgres stop
+```
+
+Redis 使用：
+
+```bash
+.local/services/redis/bin/redis-cli -h 127.0.0.1 -a "$(cat /Users/ricardo/Documents/A-project/xianYuAgent/.local/runtime/redis-pass)" shutdown
+```
+
 ## 启动前确认
 
 - 项目目录：`D:\A-projeck\xianYuAgent`
