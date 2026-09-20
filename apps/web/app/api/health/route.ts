@@ -7,8 +7,9 @@ export async function GET(request: Request) {
   const guard = adminApiError(request);
   if (guard) return guard;
   const services = await getSystemHealth();
+  const requiredServices = services.filter((service) => service.name !== "wecom");
   return Response.json({
-    mode: services.some((service) => service.state === "not-configured") ? "demo" : "connected",
+    mode: requiredServices.some((service) => service.state !== "ready") ? "demo" : "connected",
     services,
     checkedAt: new Date().toISOString(),
   });

@@ -41,7 +41,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <Scan size={20} weight="bold" aria-hidden="true" />
             <strong>机会雷达</strong>
           </Link>
-          <span className="mobile-mode">演示模式</span>
         </header>
         <main className="workspace">{children}</main>
         <MobileNav />

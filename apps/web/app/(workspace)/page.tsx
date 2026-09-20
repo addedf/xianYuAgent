@@ -8,7 +8,10 @@ import {
   Lightning,
 } from "@phosphor-icons/react/dist/ssr";
 import { RiskChip } from "@/components/status-chip";
-import { assessedDemoListings, demoKnowledgeEntries, demoMonitorTasks } from "@/src/data/demo";
+import { XianyuAuthRequiredNotice } from "@/components/xianyu-auth-required-notice";
+import { getServerEnv, isDemoMode } from "@/src/server/env";
+import { loadLatestAssessedListings } from "@/src/server/listings";
+import { getXianyuAuthStatus } from "@/src/server/sources/xianyu-auth";
 
 const currency = new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY", maximumFractionDigits: 0 });
 
@@ -16,8 +19,19 @@ function categoryMark(category: string) {
   return category === "watch" ? "表" : category === "bag" ? "包" : "饰";
 }
 
-export default function DashboardPage() {
-  const priorityLeads = assessedDemoListings
+export default async function DashboardPage() {
+  const demoMode = isDemoMode();
+  let items: Awaited<ReturnType<typeof loadLatestAssessedListings>> = [];
+  let loggedIn = false;
+  if (!demoMode) {
+    const [listingsResult, authResult] = await Promise.allSettled([
+      loadLatestAssessedListings(),
+      getXianyuAuthStatus({ env: getServerEnv() }),
+    ]);
+    if (listingsResult.status === "fulfilled") items = listingsResult.value;
+    if (authResult.status === "fulfilled") loggedIn = authResult.value.loggedIn;
+  }
+  const priorityLeads = items
     .filter(({ assessment }) => assessment.recommendedAction !== "archive")
     .sort((a, b) => b.assessment.scores.totalOpportunity - a.assessment.scores.totalOpportunity);
   const notifyCount = priorityLeads.filter(({ assessment }) => assessment.recommendedAction === "notify").length;
@@ -27,12 +41,11 @@ export default function DashboardPage() {
     <div className="page-stack">
       <header className="page-header page-header-split">
         <div>
-          <p className="context-line">2026 年 8 月 30 日 · 广州 / 佛山</p>
+          <p className="context-line">PostgreSQL 真实数据 · 广州 / 佛山</p>
           <h1>今日机会概览</h1>
           <p>先处理高价值新线索，再把人工判断沉淀为下一次可复用的标准。</p>
         </div>
         <div className="page-header-actions">
-          <span className="mode-badge">演示数据</span>
           <Link className="button button-primary" href="/leads">
             审阅新线索
             <ArrowRight size={17} aria-hidden="true" />
@@ -40,11 +53,13 @@ export default function DashboardPage() {
         </div>
       </header>
 
+      {!loggedIn && <XianyuAuthRequiredNotice />}
+
       <section className="signal-strip" aria-label="今日关键指标">
         <div className="signal-item">
           <span>今日新增</span>
-          <strong>28</strong>
-          <small>最近一条 2 分钟前</small>
+          <strong>{items.length}</strong>
+          <small>{items.length ? "已入库真实线索" : "完成闲鱼鉴权后获取"}</small>
         </div>
         <div className="signal-item signal-emphasis">
           <span>建议提醒</span>
@@ -122,16 +137,7 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="task-list">
-              {demoMonitorTasks.map((task) => (
-                <div className="task-row" key={task.id}>
-                  <div className="task-state"><span aria-hidden="true" /></div>
-                  <div>
-                    <strong>{task.name}</strong>
-                    <span>{task.keywords.join("、")}</span>
-                    <small>{task.regions.join(" / ")} · 5 分钟一次</small>
-                  </div>
-                </div>
-              ))}
+              <div className="empty-state">尚未配置真实监控任务。</div>
             </div>
           </section>
 
@@ -146,14 +152,14 @@ export default function DashboardPage() {
               <li><Eye size={18} aria-hidden="true" /><span><strong>发现</strong><small>最新结果增量识别</small></span><b>正常</b></li>
               <li><Lightning size={18} aria-hidden="true" /><span><strong>判断</strong><small>规则集 2026.08.30-v1</small></span><b>正常</b></li>
               <li><BellRinging size={18} aria-hidden="true" /><span><strong>通知</strong><small>等待配置企业微信</small></span><b className="state-pending">待配置</b></li>
-              <li><Database size={18} aria-hidden="true" /><span><strong>沉淀</strong><small>{demoKnowledgeEntries.length} 条演示知识</small></span><b>可用</b></li>
+              <li><Database size={18} aria-hidden="true" /><span><strong>沉淀</strong><small>等待真实商品与人工判断</small></span><b>待积累</b></li>
             </ul>
           </section>
 
           <section className="knowledge-callout">
             <ClockCountdown size={21} weight="fill" aria-hidden="true" />
             <div>
-              <strong>3 条判断可转为经验候选</strong>
+              <strong>真实数据进入后再沉淀经验</strong>
               <p>先人工确认，再生成新版本；Agent 不会自行覆盖现有规则。</p>
               <Link href="/knowledge">进入经验知识库</Link>
             </div>
@@ -163,4 +169,3 @@ export default function DashboardPage() {
     </div>
   );
 }
-
