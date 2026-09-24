@@ -22,7 +22,7 @@ export function AdminLogoutButton() {
   return (
     <button className="sidebar-logout" disabled={loading} onClick={logout} type="button">
       <SignOut size={16} aria-hidden="true" />
-      {loading ? "正在退出" : "退出管理"}
+      <span>{loading ? "正在退出" : "退出管理"}</span>
     </button>
   );
 }

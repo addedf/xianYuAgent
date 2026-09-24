@@ -15,6 +15,7 @@ const serviceLabels = {
   redis: "Redis / BullMQ",
   "xianyu-collector": "闲鱼只读采集器",
   wecom: "企业微信机器人",
+  typesafe: "JEV 主评分",
 };
 
 export function ConnectionPanel() {

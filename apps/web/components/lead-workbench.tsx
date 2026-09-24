@@ -1,19 +1,23 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import Image from "next/image";
+import { useEffect, useMemo, useState } from "react";
 import {
   ArrowSquareOut,
   BookOpenText,
+  CaretLeft,
+  CaretRight,
   CheckCircle,
   ImageSquare,
   Info,
   MagnifyingGlass,
   SealWarning,
   UserCircleCheck,
-  XCircle,
+  X,
 } from "@phosphor-icons/react";
 import { RiskChip } from "@/components/status-chip";
 import type { ListingAssessment, MarketplaceListing, RecommendedAction } from "@/src/domain/listing";
+import { nonPersonalSellerReason } from "@/src/domain/seller";
 
 type AssessedListing = { listing: MarketplaceListing; assessment: ListingAssessment };
 type Filter = "all" | RecommendedAction;
@@ -26,11 +30,46 @@ const actionLabels: Record<RecommendedAction, string> = {
   archive: "留档观察",
   skip: "默认跳过",
 };
+const evidenceSourceLabels: Record<string, string> = { rule: "规则", knowledge: "知识", market: "市场", seller: "卖家", model: "模型" };
+
+function ListingPhoto({ src, alt, category, variant }: { src?: string; alt: string; category: keyof typeof categoryLabels; variant: "thumb" | "card" | "lightbox" }) {
+  const [failed, setFailed] = useState(false);
+  const fallback = categoryLabels[category].slice(0, 1);
+
+  if (!src || failed) {
+    return (
+      <span className={`listing-photo listing-photo-${variant} listing-photo-fallback category-${category}`} aria-label={src ? "图片加载失败" : "暂无商品图片"}>
+        <span className="category-mark" aria-hidden="true">{fallback}</span>
+      </span>
+    );
+  }
+
+  return (
+    <span className={`listing-photo listing-photo-${variant}`}>
+      <Image
+        src={src}
+        alt={alt}
+        width={variant === "thumb" ? 52 : variant === "card" ? 420 : 1200}
+        height={variant === "thumb" ? 52 : variant === "card" ? 280 : 900}
+        loading={variant === "thumb" ? "lazy" : "eager"}
+        style={variant === "lightbox" ? { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain" } : undefined}
+        unoptimized
+        onError={() => setFailed(true)}
+      />
+    </span>
+  );
+}
 
 export function LeadWorkbench({ items, demoMode = true }: { items: AssessedListing[]; demoMode?: boolean }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [selectedId, setSelectedId] = useState(items[0]?.listing.id ?? "");
-  const [feedback, setFeedback] = useState<string | null>(null);
+  const [photoIndex, setPhotoIndex] = useState(0);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const [feedbackType, setFeedbackType] = useState<"manual-feedback" | "rule-candidate">("manual-feedback");
+  const [feedbackText, setFeedbackText] = useState("");
+  const [feedbackLabel, setFeedbackLabel] = useState("");
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  const [feedbackNotice, setFeedbackNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [knowledgeCandidate, setKnowledgeCandidate] = useState(false);
 
   const filtered = useMemo(
@@ -39,15 +78,77 @@ export function LeadWorkbench({ items, demoMode = true }: { items: AssessedListi
   );
   const selected = items.find(({ listing }) => listing.id === selectedId) ?? filtered[0] ?? items[0];
 
+  const photos = selected?.listing.imageUrls ?? [];
+  const sellerTypeReason = selected ? nonPersonalSellerReason(selected.listing.seller) : null;
+
+  useEffect(() => {
+    if (!lightboxOpen) return;
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setLightboxOpen(false);
+      if (event.key === "ArrowLeft" && photos.length > 1) setPhotoIndex((current) => (current - 1 + photos.length) % photos.length);
+      if (event.key === "ArrowRight" && photos.length > 1) setPhotoIndex((current) => (current + 1) % photos.length);
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [lightboxOpen, photos.length]);
+
   if (!selected) {
     return <div className="empty-state">当前没有可审阅线索。</div>;
   }
 
   const { listing, assessment } = selected;
+  const selectedPhotoIndex = photos.length > 0 ? Math.min(photoIndex, photos.length - 1) : 0;
+  const activePhoto = photos[selectedPhotoIndex] ?? photos[0];
+  const photoWindowSize = Math.min(4, Math.max(photos.length, 1));
+  const photoWindowStart = Math.min(
+    Math.max(selectedPhotoIndex - Math.floor(photoWindowSize / 2), 0),
+    Math.max(photos.length - photoWindowSize, 0),
+  );
+  const visiblePhotos = photos.slice(photoWindowStart, photoWindowStart + photoWindowSize);
 
-  function recordFeedback(value: string) {
-    setFeedback(value);
-    setKnowledgeCandidate(value !== "判断正确");
+  function movePhoto(delta: number) {
+    if (photos.length < 2) return;
+    setPhotoIndex((current) => (current + delta + photos.length) % photos.length);
+  }
+
+  async function submitFeedback() {
+    const reason = feedbackText.trim();
+    if (!reason || feedbackSubmitting) return;
+    setFeedbackSubmitting(true);
+    setFeedbackNotice(null);
+    try {
+      const response = await fetch("/api/feedback", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          listingId: listing.id,
+          assessmentId: assessment.assessmentId,
+          feedbackType,
+          reason,
+          finalLabel: feedbackLabel.trim() || undefined,
+          knowledgeCandidate: feedbackType === "rule-candidate" ? { text: reason, label: feedbackLabel.trim() || undefined } : undefined,
+        }),
+      });
+      const result = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "反馈保存失败，请重试。");
+      setFeedbackNotice({ kind: "success", text: feedbackType === "rule-candidate" ? "规则候选已提交，等待知识库复核。" : "人工反馈已保存。" });
+      setFeedbackText("");
+      setFeedbackLabel("");
+      setKnowledgeCandidate(feedbackType === "rule-candidate");
+    } catch (error) {
+      setFeedbackNotice({ kind: "error", text: error instanceof Error ? error.message : "反馈保存失败，请重试。" });
+    } finally {
+      setFeedbackSubmitting(false);
+    }
+  }
+
+  function resetReviewState() {
+    setPhotoIndex(0);
+    setLightboxOpen(false);
+    setFeedbackText("");
+    setFeedbackLabel("");
+    setFeedbackNotice(null);
+    setKnowledgeCandidate(false);
   }
 
   return (
@@ -64,7 +165,10 @@ export function LeadWorkbench({ items, demoMode = true }: { items: AssessedListi
                 className="filter-tab"
                 data-active={filter === value}
                 key={value}
-                onClick={() => setFilter(value)}
+                onClick={() => {
+                  setFilter(value);
+                  resetReviewState();
+                }}
                 type="button"
               >
                 {value === "all" ? "全部" : actionLabels[value]}
@@ -84,14 +188,11 @@ export function LeadWorkbench({ items, demoMode = true }: { items: AssessedListi
                 key={item.listing.id}
                 onClick={() => {
                   setSelectedId(item.listing.id);
-                  setFeedback(null);
-                  setKnowledgeCandidate(false);
+                  resetReviewState();
                 }}
                 type="button"
               >
-                <span className={`category-mark category-${item.listing.category}`} aria-hidden="true">
-                  {categoryLabels[item.listing.category].slice(0, 1)}
-                </span>
+                <ListingPhoto src={item.listing.imageUrls[0]} alt="" category={item.listing.category} variant="thumb" />
                 <span className="queue-item-main">
                   <span className="queue-item-topline">
                     <strong>{item.listing.brand} {item.listing.model}</strong>
@@ -100,6 +201,7 @@ export function LeadWorkbench({ items, demoMode = true }: { items: AssessedListi
                   <span className="queue-item-title">{item.listing.title}</span>
                   <span className="queue-item-meta">{currency.format(item.listing.price)} · {item.listing.region}</span>
                   <RiskChip level={item.assessment.riskLevel} />
+                  {nonPersonalSellerReason(item.listing.seller) && <span className="seller-type-tag" title={nonPersonalSellerReason(item.listing.seller) ?? undefined}>疑似非个人卖家</span>}
                 </span>
               </button>
             );
@@ -117,25 +219,67 @@ export function LeadWorkbench({ items, demoMode = true }: { items: AssessedListi
             <h2>{listing.brand} {listing.model}</h2>
             <p>{listing.title}</p>
           </div>
-          {listing.sourceUrl ? (
-            <a className="button button-secondary" href={listing.sourceUrl} target="_blank" rel="noreferrer">
-              打开原帖
-              <ArrowSquareOut size={17} aria-hidden="true" />
-            </a>
-          ) : (
-            <button className="button button-secondary" type="button" disabled title="当前记录没有原帖地址">
-              打开原帖
-              <ArrowSquareOut size={17} aria-hidden="true" />
-            </button>
-          )}
+          <div className="lead-detail-actions">
+            {listing.sourceUrl ? (
+              <a className="button button-secondary" href={listing.sourceUrl} target="_blank" rel="noreferrer">
+                打开原帖
+                <ArrowSquareOut size={17} aria-hidden="true" />
+              </a>
+            ) : (
+              <button className="button button-secondary" type="button" disabled title="当前记录没有原帖地址">
+                打开原帖
+                <ArrowSquareOut size={17} aria-hidden="true" />
+              </button>
+            )}
+          </div>
         </header>
-
         <div className="lead-facts">
           <div><span>挂牌价</span><strong>{currency.format(listing.price)}</strong></div>
           <div><span>参考区间</span><strong>{listing.marketReferencePrice ? currency.format(listing.marketReferencePrice) : "暂无"}</strong></div>
           <div><span>区域 / 距离</span><strong>{listing.region}{listing.distanceKm ? ` · ${listing.distanceKm}km` : ""}</strong></div>
-          <div><span>卖家</span><strong>{listing.seller.displayName} · {listing.seller.activeListingCount} 条发布</strong></div>
+          <div>
+            <span>卖家</span>
+            <strong>{listing.seller.displayName} · 在架 {listing.seller.activeListingCount} 条</strong>
+            <small className="seller-observed-types">
+              已采集在架品类：{(["watch", "bag", "jewelry"] as const).map((category) => `${categoryLabels[category]} ${listing.seller.observedCategoryCounts?.[category] ?? (category === listing.category ? listing.seller.sameCategoryCount ?? 0 : 0)} 条`).join(" · ")}
+            </small>
+            <small className="seller-observed-types">当前按昵称与地区匹配已采集记录，不代表完整主页或确认同一账号</small>
+            {sellerTypeReason && <em className="seller-type-tag" title={sellerTypeReason}>疑似非个人卖家</em>}
+          </div>
         </div>
+
+        <div className="listing-photo-list" data-demo-mode={demoMode} aria-label="商品图片横向列表">
+          <button className="listing-photo-list-arrow" type="button" onClick={() => movePhoto(-1)} disabled={photos.length < 2} aria-label="向左切换商品图片"><CaretLeft size={22} weight="bold" /></button>
+          <div className="listing-photo-list-viewport">
+            <div className="listing-photo-list-track">
+              {visiblePhotos.length > 0 ? visiblePhotos.map((src, offset) => {
+                const index = photoWindowStart + offset;
+                return (
+                  <button className="listing-photo-item" data-active={selectedPhotoIndex === index} key={`${src}-${index}`} type="button" onClick={() => { setPhotoIndex(index); setLightboxOpen(true); }} aria-label={`放大查看第 ${index + 1} 张商品图片`}>
+                    <ListingPhoto src={src} alt={`${listing.brand}商品图片 ${index + 1}`} category={listing.category} variant="card" />
+                    <span>{index + 1}</span>
+                  </button>
+                );
+              }) : (
+                <ListingPhoto alt="暂无商品图片" category={listing.category} variant="card" />
+              )}
+            </div>
+          </div>
+          <button className="listing-photo-list-arrow" type="button" onClick={() => movePhoto(1)} disabled={photos.length < 2} aria-label="向右切换商品图片"><CaretRight size={22} weight="bold" /></button>
+          <span className="listing-photo-list-count">{photos.length > 0 ? `${selectedPhotoIndex + 1} / ${photos.length}` : "暂无图片"}</span>
+        </div>
+
+        {lightboxOpen && activePhoto && (
+          <div className="photo-lightbox" role="dialog" aria-modal="true" aria-label="商品图片预览" onClick={() => setLightboxOpen(false)}>
+            <div className="photo-lightbox-content" onClick={(event) => event.stopPropagation()}>
+              <button className="photo-lightbox-close" type="button" onClick={() => setLightboxOpen(false)} aria-label="关闭图片预览"><X size={22} /></button>
+              {photos.length > 1 && <button className="photo-lightbox-arrow photo-lightbox-arrow-left" type="button" onClick={() => movePhoto(-1)} aria-label="上一张图片"><CaretLeft size={27} weight="bold" /></button>}
+              <ListingPhoto src={activePhoto} alt={`${listing.brand}商品图片 ${selectedPhotoIndex + 1}`} category={listing.category} variant="lightbox" />
+              {photos.length > 1 && <button className="photo-lightbox-arrow photo-lightbox-arrow-right" type="button" onClick={() => movePhoto(1)} aria-label="下一张图片"><CaretRight size={27} weight="bold" /></button>}
+              <span className="photo-lightbox-count">{selectedPhotoIndex + 1} / {photos.length}</span>
+            </div>
+          </div>
+        )}
 
         <div className="assessment-summary">
           <div className="opportunity-score">
@@ -147,6 +291,11 @@ export function LeadWorkbench({ items, demoMode = true }: { items: AssessedListi
             <RiskChip level={assessment.riskLevel} />
             <h3>{actionLabels[assessment.recommendedAction]}</h3>
             <p>{assessment.summary}</p>
+            <small>
+              {assessment.modelVersion ? `JEV 主评分 ${assessment.modelVersion}` : "仅规则评估（JEV 未返回结果）"}
+              {assessment.modelConfidence !== undefined ? ` · 模型置信度 ${assessment.modelConfidence}%` : ""}
+              {assessment.modelConfidence !== undefined && assessment.modelConfidence < 55 ? " · 建议人工复核" : ""}
+            </small>
           </div>
         </div>
 
@@ -164,7 +313,7 @@ export function LeadWorkbench({ items, demoMode = true }: { items: AssessedListi
                 <h3>判断依据</h3>
                 <p>按影响程度排序，结论可被人工纠正。</p>
               </div>
-              <span>规则 {assessment.rulesetVersion}</span>
+              <span>{assessment.modelVersion ? `JEV 主评分 ${assessment.modelVersion}` : `规则 ${assessment.rulesetVersion}`}</span>
             </div>
             <div className="evidence-list">
               {assessment.evidence.map((item) => {
@@ -175,7 +324,10 @@ export function LeadWorkbench({ items, demoMode = true }: { items: AssessedListi
                     <div>
                       <strong>{item.label}</strong>
                       <p>{item.detail}</p>
-                      <small>来源：{item.source} · 影响 {item.scoreImpact > 0 ? "+" : ""}{item.scoreImpact}</small>
+                      <small>来源：{evidenceSourceLabels[item.source] ?? item.source} · 影响 {item.scoreImpact > 0 ? "+" : ""}{item.scoreImpact}</small>
+                      {item.source === "model" && item.probabilities && (
+                        <small>概率：{Object.entries(item.probabilities).map(([key, value]) => `${key} ${Math.round(value * 100)}%`).join(" · ")}</small>
+                      )}
                     </div>
                   </div>
                 );
@@ -195,15 +347,30 @@ export function LeadWorkbench({ items, demoMode = true }: { items: AssessedListi
 
             <div className="review-block">
               <h3><UserCircleCheck size={19} aria-hidden="true" /> 人工反馈</h3>
-              <p>反馈不会直接改规则，而是先形成待复核经验候选。</p>
-              <div className="feedback-actions">
-                <button type="button" onClick={() => recordFeedback("判断正确")}><CheckCircle size={17} />判断正确</button>
-                <button type="button" onClick={() => recordFeedback("需要纠正")}><XCircle size={17} />需要纠正</button>
-                <button type="button" onClick={() => recordFeedback("已成交")}><BookOpenText size={17} />已成交</button>
+              <p>直接写下证据、纠正意见或规则条件，提交后会保存在当前线索的反馈记录中。</p>
+              <div className="feedback-form">
+                <label>
+                  <span>提交类型</span>
+                  <select value={feedbackType} onChange={(event) => setFeedbackType(event.target.value as "manual-feedback" | "rule-candidate")}>
+                    <option value="manual-feedback">人工意见</option>
+                    <option value="rule-candidate">规则候选</option>
+                  </select>
+                </label>
+                <label>
+                  <span>结论标签（可选）</span>
+                  <input value={feedbackLabel} onChange={(event) => setFeedbackLabel(event.target.value)} placeholder="例如：补充序列号后可收" maxLength={80} />
+                </label>
+                <label>
+                  <span>意见或规则内容</span>
+                  <textarea value={feedbackText} onChange={(event) => setFeedbackText(event.target.value)} placeholder="写下你看到的证据、需要纠正的判断，或下一版规则应满足的条件…" rows={4} maxLength={4000} />
+                </label>
+                <button className="button button-primary button-small" type="button" onClick={submitFeedback} disabled={feedbackSubmitting || !feedbackText.trim()}>
+                  {feedbackSubmitting ? "保存中…" : feedbackType === "rule-candidate" ? "提交规则候选" : "提交人工反馈"}
+                </button>
               </div>
-              {feedback && (
-                <div className="feedback-notice">
-                  已记录“{feedback}”（{demoMode ? "演示模式" : "当前页面会话"}，反馈持久化接口尚未接入）。
+              {feedbackNotice && (
+                <div className="feedback-notice" data-kind={feedbackNotice.kind}>
+                  {feedbackNotice.text}
                 </div>
               )}
             </div>

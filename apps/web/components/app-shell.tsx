@@ -1,22 +1,65 @@
+"use client";
+
 import Link from "next/link";
-import { PauseCircle, Scan, ShieldCheck } from "@phosphor-icons/react/dist/ssr";
+import { CaretLeft, CaretRight, PauseCircle, Scan, ShieldCheck } from "@phosphor-icons/react";
+import { useSyncExternalStore } from "react";
 import { MobileNav } from "./mobile-nav";
 import { SidebarNav } from "./sidebar-nav";
 import { AdminLogoutButton } from "./admin-logout-button";
 
+function readSidebarPreference() {
+  try {
+    return window.localStorage.getItem("xianyu-sidebar-collapsed") === "true";
+  } catch {
+    return false;
+  }
+}
+
+function subscribeSidebarPreference(onChange: () => void) {
+  window.addEventListener("storage", onChange);
+  window.addEventListener("xianyu-sidebar-preference-change", onChange);
+  return () => {
+    window.removeEventListener("storage", onChange);
+    window.removeEventListener("xianyu-sidebar-preference-change", onChange);
+  };
+}
+
 export function AppShell({ children }: { children: React.ReactNode }) {
+  const sidebarCollapsed = useSyncExternalStore(subscribeSidebarPreference, readSidebarPreference, () => false);
+
+  function toggleSidebar() {
+    try {
+      window.localStorage.setItem("xianyu-sidebar-collapsed", String(!sidebarCollapsed));
+      window.dispatchEvent(new Event("xianyu-sidebar-preference-change"));
+    } catch {
+      // Leave the menu expanded when browser storage is unavailable.
+    }
+  }
+
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-sidebar-collapsed={sidebarCollapsed}>
       <aside className="app-sidebar">
-        <Link className="brand-lockup" href="/" aria-label="闲鱼二奢机会雷达首页">
-          <span className="brand-mark" aria-hidden="true">
-            <Scan size={22} weight="bold" />
-          </span>
-          <span>
-            <strong>机会雷达</strong>
-            <small>二奢鉴别工作台</small>
-          </span>
-        </Link>
+        <div className="sidebar-brand-row">
+          <Link className="brand-lockup" href="/" aria-label="闲鱼二奢机会雷达首页">
+            <span className="brand-mark" aria-hidden="true">
+              <Scan size={22} weight="bold" />
+            </span>
+            <span className="brand-copy">
+              <strong>机会雷达</strong>
+              <small>二奢鉴别工作台</small>
+            </span>
+          </Link>
+          <button
+            className="sidebar-collapse-toggle"
+            type="button"
+            onClick={toggleSidebar}
+            aria-label={sidebarCollapsed ? "展开菜单" : "折叠菜单"}
+            aria-expanded={!sidebarCollapsed}
+            title={sidebarCollapsed ? "展开菜单" : "折叠菜单"}
+          >
+            {sidebarCollapsed ? <CaretRight size={17} weight="bold" /> : <CaretLeft size={17} weight="bold" />}
+          </button>
+        </div>
 
         <SidebarNav />
 

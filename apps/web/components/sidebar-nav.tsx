@@ -26,7 +26,7 @@ export function SidebarNav() {
         const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
         const Icon = item.icon;
         return (
-          <Link key={item.href} href={item.href} className="sidebar-link" aria-current={active ? "page" : undefined}>
+          <Link key={item.href} href={item.href} className="sidebar-link" aria-label={item.label} title={item.label} aria-current={active ? "page" : undefined}>
             <Icon size={19} weight={active ? "fill" : "regular"} aria-hidden="true" />
             <span>{item.label}</span>
             <CaretRight className="sidebar-link-caret" size={15} aria-hidden="true" />
@@ -36,4 +36,3 @@ export function SidebarNav() {
     </nav>
   );
 }
-

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { LeadWorkbench } from "@/components/lead-workbench";
+import { RescoreAllButton } from "@/components/rescore-all-button";
 import { XianyuAuthRequiredNotice } from "@/components/xianyu-auth-required-notice";
 import { assessedDemoListings } from "@/src/data/demo";
 import { getServerEnv, isDemoMode } from "@/src/server/env";
@@ -39,10 +40,13 @@ export default async function LeadsPage() {
 
   return (
     <div className="page-stack page-stack-wide">
-      <header className="page-header">
-        <p className="context-line">{demoMode ? "演示数据" : "PostgreSQL 真实数据"} · 证据优先 · 人工最终确认</p>
-        <h1>线索审阅</h1>
-        <p>把商品、卖家、风险依据和经验反馈放在同一视图中，避免只看一个总分。</p>
+      <header className="page-header page-header-split">
+        <div>
+          <p className="context-line">{demoMode ? "演示数据" : "PostgreSQL 真实数据"} · 证据优先 · 人工最终确认</p>
+          <h1>线索审阅</h1>
+          <p>把商品、卖家、风险依据和经验反馈放在同一视图中，避免只看一个总分。</p>
+        </div>
+        <RescoreAllButton demoMode={demoMode} />
       </header>
       {authRequired && (
         <XianyuAuthRequiredNotice message="当前线索库只会显示已经入库的内容，无法获取新的闲鱼商品。完成扫码或官方窗口登录后，请在“连接与控制”中执行搜索并导入。" />
