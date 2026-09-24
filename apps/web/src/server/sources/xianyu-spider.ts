@@ -44,6 +44,7 @@ const sourceProductSchema = z.object({
   seller: z.string().nullish().transform((value) => value?.trim() || "匿名卖家"),
   link: z.string().nullish().transform((value) => value?.trim() || ""),
   image_url: z.string().nullish().transform((value) => value?.trim() || ""),
+  image_urls: z.union([z.string(), z.array(z.string()), z.null()]).optional(),
   publish_time: z.union([z.date(), z.string(), z.null()]),
 });
 
@@ -128,6 +129,22 @@ function safeHttpUrl(value: string): string | undefined {
   }
 }
 
+function parseImageUrls(product: SourceProduct): string[] {
+  const values = Array.isArray(product.image_urls)
+    ? product.image_urls
+    : typeof product.image_urls === "string"
+      ? (() => {
+        try {
+          const parsed = JSON.parse(product.image_urls);
+          return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [product.image_urls];
+        } catch {
+          return [product.image_urls];
+        }
+      })()
+      : [];
+  return [...new Set([product.image_url, ...values].map(safeHttpUrl).filter((value): value is string => Boolean(value)))];
+}
+
 export function normalizeXianyuProduct(productValue: unknown, input: XianyuSearchInput): MarketplaceListing | null {
   const product = sourceProductSchema.parse(productValue);
   const price = parsePrice(product.price);
@@ -137,7 +154,7 @@ export function normalizeXianyuProduct(productValue: unknown, input: XianyuSearc
   const publishDate = product.publish_time ? new Date(product.publish_time) : null;
   const publishedAt = publishDate && Number.isFinite(publishDate.getTime()) ? publishDate.toISOString() : new Date(0).toISOString();
   const sourceUrl = safeHttpUrl(product.link.replace("fleamarket://", "https://www.goofish.com/"));
-  const imageUrl = safeHttpUrl(product.image_url);
+  const imageUrls = parseImageUrls(product);
   const sellerExternalId = `nickname-${hash(`${product.seller}|${product.area}`, 20)}`;
 
   return {
@@ -152,7 +169,7 @@ export function normalizeXianyuProduct(productValue: unknown, input: XianyuSearc
     region: product.area,
     publishedAt,
     firstSeenAt: now.toISOString(),
-    imageUrls: imageUrl ? [imageUrl] : [],
+    imageUrls,
     duplicateImageCount: 0,
     hasSerialDetail: false,
     hasPurchaseProof: false,
@@ -163,8 +180,9 @@ export function normalizeXianyuProduct(productValue: unknown, input: XianyuSearc
       externalId: sellerExternalId,
       displayName: product.seller,
       region: product.area,
-      activeListingCount: 6,
+      activeListingCount: 0,
       sameCategoryRatio: 0,
+      identityScope: "nickname-region",
       templateSimilarity: 0,
       hasPersonalStorySignals: false,
       hasNaturalSceneSignals: false,

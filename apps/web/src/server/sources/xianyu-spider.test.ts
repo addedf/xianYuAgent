@@ -56,6 +56,19 @@ describe("normalizeXianyuProduct", () => {
       normalizeXianyuProduct({ ...sourceProduct, price: "价格异常" }, { keyword: "劳力士", category: "watch", maxPages: 1 }),
     ).toBeNull();
   });
+
+  it("keeps all collector image URLs for the detail carousel", () => {
+    const listing = normalizeXianyuProduct({
+      ...sourceProduct,
+      image_urls: JSON.stringify(["https://img.example.com/front.jpg", "https://img.example.com/back.jpg"]),
+    }, { keyword: "劳力士", category: "watch", maxPages: 1 });
+
+    expect(listing?.imageUrls).toEqual([
+      "https://img.example.com/item.jpg",
+      "https://img.example.com/front.jpg",
+      "https://img.example.com/back.jpg",
+    ]);
+  });
 });
 
 describe("importXianyuSearch", () => {

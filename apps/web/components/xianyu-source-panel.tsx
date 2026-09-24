@@ -33,6 +33,7 @@ export function XianyuSourcePanel() {
   const [city, setCity] = useState("广州");
   const [minPrice, setMinPrice] = useState("5000");
   const [maxPrice, setMaxPrice] = useState("150000");
+  const [maxPages, setMaxPages] = useState("1");
   const [loading, setLoading] = useState(false);
   const [authState, setAuthState] = useState<"checking" | "authenticated" | "required" | "unavailable">("checking");
   const [result, setResult] = useState<ImportResult | null>(null);
@@ -73,7 +74,7 @@ export function XianyuSourcePanel() {
           city: city.trim() || undefined,
           minPrice: optionalNumber(minPrice),
           maxPrice: optionalNumber(maxPrice),
-          maxPages: 1,
+          maxPages: Number(maxPages),
           publishDays: 3,
         }),
       });
@@ -95,8 +96,8 @@ export function XianyuSourcePanel() {
     <section className="panel source-panel">
       <div className="section-heading">
         <div>
-          <h2>闲鱼真实数据入口</h2>
-          <p>手动触发一次低频只读搜索；新增商品经规范化、去重后写入 PostgreSQL。</p>
+          <h2>闲鱼真实数据入口 · 批量评估</h2>
+          <p>采集结果写入 PostgreSQL 时由规则引擎整理事实与评分选项，JEV 主评分并保存；相同内容不会在后续扫描中重复评分。</p>
         </div>
         <Database size={22} weight="fill" aria-hidden="true" />
       </div>
@@ -125,6 +126,14 @@ export function XianyuSourcePanel() {
         <label>
           <span>最高价</span>
           <input inputMode="numeric" value={maxPrice} onChange={(event) => setMaxPrice(event.target.value)} />
+        </label>
+        <label>
+          <span>扫描页数</span>
+          <select value={maxPages} onChange={(event) => setMaxPages(event.target.value)}>
+            <option value="1">1 页</option>
+            <option value="2">2 页</option>
+            <option value="3">3 页</option>
+          </select>
         </label>
         <button className="button button-primary" type="submit" disabled={loading || !keyword.trim() || authState !== "authenticated"}>
           {loading ? <CircleNotch className="spin" size={17} /> : <MagnifyingGlass size={17} />}
