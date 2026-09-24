@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { assessListing } from "@/src/domain/scoring";
+import { fuseAssessment } from "@/src/domain/fusion";
 import { adminApiError } from "@/src/server/auth/admin-request";
+import { evaluateListing } from "@/src/server/evaluators/typesafe";
+import { getServerEnv } from "@/src/server/env";
+import { loadSellerRuleSettings } from "@/src/server/seller-rule-settings";
 
 const listingSchema = z.object({
   id: z.string().min(1),
@@ -30,11 +34,13 @@ const listingSchema = z.object({
     region: z.string(),
     activeListingCount: z.number().int().nonnegative(),
     sameCategoryRatio: z.number().min(0).max(1),
+    signalScope: z.enum(["observed-listings", "complete-profile", "nickname-only"]).optional(),
     templateSimilarity: z.number().min(0).max(1),
     hasPersonalStorySignals: z.boolean(),
     hasNaturalSceneSignals: z.boolean(),
     accountAgeDays: z.number().int().nonnegative().optional(),
   }),
+  includeModel: z.boolean().optional().default(false),
 });
 
 export async function POST(request: Request) {
@@ -45,5 +51,10 @@ export async function POST(request: Request) {
     return Response.json({ error: "商品数据格式不正确。", issues: payload.error.issues }, { status: 400 });
   }
 
-  return Response.json({ assessment: assessListing(payload.data) });
+  const { includeModel, ...listing } = payload.data;
+  const sellerRuleThresholds = (await loadSellerRuleSettings()).thresholds;
+  const ruleAssessment = assessListing(listing, new Date(), sellerRuleThresholds);
+  if (!includeModel || listing.platform === "demo") return Response.json({ assessment: ruleAssessment });
+  const evaluation = await evaluateListing(listing, ruleAssessment, { sellerRuleThresholds });
+  return Response.json({ assessment: evaluation ? fuseAssessment(ruleAssessment, evaluation, getServerEnv().TYPESAFE_CONFIDENCE_THRESHOLD, listing.seller, sellerRuleThresholds) : ruleAssessment });
 }

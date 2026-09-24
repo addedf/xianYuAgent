@@ -8,6 +8,20 @@
       "when": 1788060266053,
       "tag": "0000_lethal_captain_stacy",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1790041867302,
+      "tag": "0001_dashing_nextwave",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790042891648,
+      "tag": "0002_steady_gwen_stacy",
+      "breakpoints": true
     }
   ]
 }

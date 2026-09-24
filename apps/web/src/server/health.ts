@@ -3,11 +3,14 @@ import postgres from "postgres";
 import { getServerEnv } from "@/src/server/env";
 import type { ServerEnv } from "@/src/server/env";
 import { getXianyuAuthStatus } from "@/src/server/sources/xianyu-auth";
+import { getDatabase } from "@/src/server/db/client";
+import { eq } from "drizzle-orm";
+import { systemControls } from "@/src/server/db/schema";
 
 export type ServiceState = "ready" | "not-configured" | "unavailable";
 
 export interface ServiceHealth {
-  name: "postgresql" | "redis" | "wecom" | "xianyu-collector";
+  name: "postgresql" | "redis" | "wecom" | "xianyu-collector" | "typesafe";
   state: ServiceState;
   detail: string;
   latencyMs?: number;
@@ -91,18 +94,41 @@ async function checkRedis(redisUrl: string): Promise<ServiceHealth> {
   }
 }
 
+async function checkTypesafe(env: ServerEnv): Promise<ServiceHealth> {
+  if (env.TYPESAFE_ENABLED !== "true") {
+    return { name: "typesafe", state: "not-configured", detail: "JEV 评估总开关已关闭。" };
+  }
+  if (!env.TYPESAFE_API_KEY) {
+    return { name: "typesafe", state: "unavailable", detail: "JEV 已启用但未配置 TYPESAFE_API_KEY。" };
+  }
+  if (!env.DATABASE_URL) {
+    return { name: "typesafe", state: "unavailable", detail: "JEV 已配置，但没有数据库可读取 jev-evaluation 总开关。" };
+  }
+  try {
+    const { db } = getDatabase();
+    const [control] = await db.select({ enabled: systemControls.enabled }).from(systemControls).where(eq(systemControls.controlKey, "jev-evaluation")).limit(1);
+    return control?.enabled
+      ? { name: "typesafe", state: "ready", detail: "JEV 已启用；Key 仅在服务端环境变量中读取。" }
+      : { name: "typesafe", state: "not-configured", detail: "JEV 环境已配置，但数据库总开关仍关闭。" };
+  } catch {
+    return { name: "typesafe", state: "unavailable", detail: "无法读取 JEV 数据库总开关。" };
+  }
+}
+
 export async function getSystemHealth(): Promise<ServiceHealth[]> {
   const env = getServerEnv();
-  const [postgresql, redis, xianyuCollector] = await Promise.all([
+  const [postgresql, redis, xianyuCollector, typesafe] = await Promise.all([
     checkPostgreSql(env.DATABASE_URL),
     checkRedis(env.REDIS_URL),
     checkXianyuCollector(env),
+    checkTypesafe(env),
   ]);
 
   return [
     postgresql,
     redis,
     xianyuCollector,
+    typesafe,
     {
       name: "wecom",
       state: env.WECOM_WEBHOOK_URL ? "ready" : "not-configured",

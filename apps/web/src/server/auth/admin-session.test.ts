@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ServerEnv } from "@/src/server/env";
+import { getServerEnv, type ServerEnv } from "@/src/server/env";
 import {
   adminAuthConfigurationError,
   createAdminSessionToken,
@@ -8,6 +8,7 @@ import {
 } from "./admin-session";
 
 const env = {
+  ...getServerEnv({ NODE_ENV: "test" }),
   APP_DEMO_MODE: "false",
   DATABASE_URL: "",
   REDIS_URL: "",

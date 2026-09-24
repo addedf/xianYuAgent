@@ -68,6 +68,9 @@ export const marketplaceListings = pgTable(
     imageRefs: jsonb("image_refs").notNull().default([]),
     rawPayload: jsonb("raw_payload").notNull().default({}),
     contentFingerprint: text("content_fingerprint"),
+    status: text("status").notNull().default("active"),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    absentScanCount: integer("absent_scan_count").notNull().default(0),
     ...auditColumns,
   },
   (table) => [
@@ -84,6 +87,9 @@ export const assessments = pgTable(
     listingId: uuid("listing_id").notNull().references(() => marketplaceListings.id, { onDelete: "cascade" }),
     rulesetVersion: text("ruleset_version").notNull(),
     modelVersion: text("model_version"),
+    modelConfidence: integer("model_confidence"),
+    modelEvaluation: jsonb("model_evaluation"),
+    inputFingerprint: text("input_fingerprint"),
     riskLevel: text("risk_level").notNull(),
     recommendedAction: text("recommended_action").notNull(),
     totalOpportunity: integer("total_opportunity").notNull(),
@@ -94,7 +100,7 @@ export const assessments = pgTable(
     evaluatedAt: timestamp("evaluated_at", { withTimezone: true }).notNull().defaultNow(),
     ...auditColumns,
   },
-  (table) => [index("assessments_listing_idx").on(table.listingId), index("assessments_action_idx").on(table.recommendedAction)],
+  (table) => [index("assessments_listing_idx").on(table.listingId), index("assessments_action_idx").on(table.recommendedAction), uniqueIndex("assessments_listing_input_unique").on(table.listingId, table.inputFingerprint)],
 );
 
 export const knowledgeEntries = pgTable(
@@ -218,4 +224,3 @@ export const systemControls = pgTable("system_controls", {
   changedBy: text("changed_by").notNull().default("local-user"),
   changedAt: timestamp("changed_at", { withTimezone: true }).notNull().defaultNow(),
 });
-

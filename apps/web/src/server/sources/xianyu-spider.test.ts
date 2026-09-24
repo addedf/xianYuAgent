@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ServerEnv } from "@/src/server/env";
+import { getServerEnv, type ServerEnv } from "@/src/server/env";
 import { importXianyuSearch, normalizeXianyuProduct, validateLocalCollectorUrl } from "./xianyu-spider";
 
 const env: ServerEnv = {
+  ...getServerEnv({ NODE_ENV: "test" }),
   APP_DEMO_MODE: "false",
   DATABASE_URL: "postgresql://placeholder/agent",
   REDIS_URL: "",

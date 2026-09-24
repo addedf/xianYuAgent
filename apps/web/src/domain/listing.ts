@@ -4,6 +4,7 @@ export type Category = (typeof CATEGORY_VALUES)[number];
 export type EvidenceKind = "positive" | "risk" | "missing" | "neutral";
 export type RiskLevel = "low" | "insufficient" | "medium" | "high";
 export type RecommendedAction = "notify" | "review" | "archive" | "skip";
+export type ListingStatus = "active" | "possibly_sold";
 
 export interface SellerProfile {
   externalId: string;
@@ -11,6 +12,12 @@ export interface SellerProfile {
   region: string;
   activeListingCount: number;
   sameCategoryRatio: number;
+  sameCategoryCount?: number;
+  completedSaleCount?: number;
+  completedSaleCountVerified?: boolean;
+  observedCategoryCounts?: Partial<Record<Category, number>>;
+  identityScope?: "stable-platform-id" | "nickname-region" | "unknown";
+  signalScope?: "observed-listings" | "complete-profile" | "nickname-only";
   templateSimilarity: number;
   hasPersonalStorySignals: boolean;
   hasNaturalSceneSignals: boolean;
@@ -40,6 +47,9 @@ export interface MarketplaceListing {
   monitorKeywords: string[];
   sourceUrl?: string;
   seller: SellerProfile;
+  status?: ListingStatus;
+  lastSeenAt?: string;
+  absentScanCount?: number;
 }
 
 export interface AssessmentEvidence {
@@ -48,7 +58,8 @@ export interface AssessmentEvidence {
   label: string;
   detail: string;
   scoreImpact: number;
-  source: "rule" | "knowledge" | "market" | "seller";
+  source: "rule" | "knowledge" | "market" | "seller" | "model";
+  probabilities?: Record<string, number>;
 }
 
 export interface AssessmentScores {
@@ -62,6 +73,7 @@ export interface AssessmentScores {
 }
 
 export interface ListingAssessment {
+  assessmentId?: string;
   listingId: string;
   riskLevel: RiskLevel;
   recommendedAction: RecommendedAction;
@@ -72,6 +84,10 @@ export interface ListingAssessment {
   summary: string;
   evaluatedAt: string;
   rulesetVersion: string;
+  modelConfidence?: number;
+  modelVersion?: string;
+  modelEvaluation?: Record<string, unknown>;
+  modelReviewRequired?: boolean;
 }
 
 export interface KnowledgeEntry {
@@ -86,6 +102,7 @@ export interface KnowledgeEntry {
   sourceLabel: string;
   updatedAt: string;
   usageCount: number;
+  active?: boolean;
 }
 
 export interface MonitorTask {
