@@ -16,7 +16,7 @@ import { getXianyuAuthStatus } from "@/src/server/sources/xianyu-auth";
 const currency = new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY", maximumFractionDigits: 0 });
 
 function categoryMark(category: string) {
-  return category === "watch" ? "表" : category === "bag" ? "包" : "饰";
+  return category === "watch" ? "表" : category === "bag" ? "包" : category === "jewelry" ? "饰" : "其";
 }
 
 export default async function DashboardPage() {
