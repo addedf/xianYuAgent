@@ -164,6 +164,9 @@ export function XianyuSourcePanel() {
             <option value="1">1 页</option>
             <option value="2">2 页</option>
             <option value="3">3 页</option>
+            <option value="5">5 页</option>
+            <option value="8">8 页</option>
+            <option value="10">10 页</option>
           </select>
         </label>
         <button className="button button-primary" type="submit" disabled={loading || !keywordText.trim() || authState !== "authenticated"}>

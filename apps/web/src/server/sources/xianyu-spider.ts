@@ -12,7 +12,7 @@ export { validateLocalCollectorUrl } from "./xianyu-collector-client";
 export const xianyuSearchInputSchema = z
   .object({
     keyword: z.string().trim().min(1).max(40),
-    maxPages: z.number().int().min(1).max(3).default(1),
+    maxPages: z.number().int().min(1).max(10).default(1),
     minPrice: z.number().int().nonnegative().optional(),
     maxPrice: z.number().int().positive().optional(),
     province: z.string().trim().max(20).optional(),
