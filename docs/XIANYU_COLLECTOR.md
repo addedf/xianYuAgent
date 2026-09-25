@@ -10,11 +10,15 @@ Web 项目不保存闲鱼 Cookie，也不实现核身或反爬逻辑。管理员
 - `xianyu_products` 表：按新增 ID 读取标题、价格、地区、卖家昵称、链接、图片、发布时间，以及详情补抓列 `detail_json`（详情原始 JSON）、`detail_fetched_at`、`seller_user_id`（卖家平台用户 ID）。
 - `xianyu_seller_profiles` 表：按 `seller_user_id` 关联卖家主页快照，`profile_json` 汇总卖出件数、在售件数、信用等级、注册时长与在售分类分布，`head_json`/`items_json` 保留原始响应。
 
-### 详情与主页补抓（2026-09 新增）
+### 详情与主页补抓（2026-09 新增，2026-09-26 收紧）
 
 搜索保存后，采集器对**库里还没有可用详情的记录**补抓商品详情页，对新卖家补抓卖家主页（头部 + 在售第一页），使 Web 端能够以稳定卖家 ID 和主页统计执行“非个人卖家”判定。限频与暂停边界：
 
-- 详情补抓：每次搜索最多 40 条，请求间 0.8–2s 随机抖动，`XIANYU_COLLECTOR_ENRICH_ENABLED=false` 可整体关闭；已有详情的记录不重复消耗请求。
+- **导入层硬筛（2026-09-26 新增）**：搜索结果在入库与详情补抓**之前**做两道拦截——①同「昵称+地区」卖家在本轮候选或库内累计商品数达到 **3 条**（`XIANYU_COLLECTOR_SELLER_BLOCK_THRESHOLD`，最低 2）即判定疑似非个人卖家，本轮全部不导入并写入 `xianyu_blocked_sellers` 拉黑，后续扫描直接跳过不再重复判断（`hit_count` 累计跳过数）；②标题命中高仿词的商品不导入，逐条留痕 `xianyu_import_skips`。高仿词表优先读 Web 共享库 `rule_versions`（`listing-counterfeit-terms` 当前版本，知识库页改词表下一轮即生效），读不到回退内置默认。
+- **已售数硬筛（2026-09-26 第二道闸）**：详情补抓**之后**，解析详情卖家卡片的已售件数（`sellerDO.hasSoldNumInteger`），**超过 30 件**（`XIANYU_COLLECTOR_SELLER_SOLD_MAX`）的整条剔除并拉黑卖家（reason=sold-count），不进 Web。没有详情数据的候选本轮不判，等下轮补抓后再判。注意：详情接口被 RGV587 风控拦截时拿不到已售数，该闸失效——此时可人工核对立查 `xianyu_blocked_sellers` 插行（reason=sold-count-manual）并删除已入库线索。
+- **重复标题硬筛（2026-09-26 第三道闸）**：入库前检测**跨卖家重复标题**——同一归一化标题（去空白/尾部括号注记/结尾标点，取前 24 字）出现 ≥2 个「昵称+地区」，或与库内其他卖家的标题前缀相同 → 整簇剔除并拉黑（reason=dup-title）。这是同行矩阵号（盗图/转发/多账号）的强信号，纯搜索层数据，**详情被风控拦截时依然有效**。同卖家重复挂不同链接不算矩阵。
+- **被拦记录不进 Web，线索审阅与「已过滤」视图看不到**；解除拉黑：删除 `xianyu_blocked_sellers` 对应行即可恢复导入。整体开关：`XIANYU_COLLECTOR_IMPORT_FILTER_ENABLED=false`。`/search/` 响应新增 `import_filter` 审计摘要（kept / skipped_seller_items / skipped_counterfeit_items / new_blocked_sellers / sold_filter / dup_title_filter）。
+- 详情补抓：每次搜索最多 **20 条**（原 40），请求间 **3–6s** 随机抖动（原 0.8–2s），搜索页由并发改为**串行 + 页间 1–2s 抖动**；`XIANYU_COLLECTOR_ENRICH_ENABLED=false` 可整体关闭；已有详情的记录不重复消耗请求。被硬筛跳过的记录不进入详情候选。
 - 主页补抓：每卖家 7 天冷却期，单次搜索最多 10 个卖家，卖家间 1–2.5s 抖动，`XIANYU_COLLECTOR_PROFILE_ENABLED=false` 可整体关闭。
 - **风控惩罚（RGV587/滑块）处理**：详情或主页请求命中 `FAIL_SYS_USER_VALIDATE` 惩罚响应时，不重试、不把惩罚页当数据入库；详情连续 3 次被拦截即熔断本轮，主页立即停止本轮剩余抓取。被拦截的记录下轮搜索会自动重试，通常等待数十分钟后风控自行解除。
 - **登录态保护**：`probe_login` 只在平台明确返回会话过期时才清除登录 Cookie；风控惩罚、网络抖动等暂时性失败仅标记 `probe_failed` 并保留登录态。会话清除时自动留有 `data/session.backup.json` 备份，误清除可人工恢复。
