@@ -18,17 +18,24 @@ import {
 import { RiskChip } from "@/components/status-chip";
 import type { ListingAssessment, MarketplaceListing, RecommendedAction } from "@/src/domain/listing";
 import { nonPersonalSellerReason } from "@/src/domain/seller";
+import { DEFAULT_SELLER_RULE_THRESHOLDS, type SellerRuleThresholds } from "@/src/domain/seller-rules";
 
 type AssessedListing = { listing: MarketplaceListing; assessment: ListingAssessment };
-type Filter = "all" | RecommendedAction;
+type Filter = "all" | RecommendedAction | "pending" | "filtered";
 
 const currency = new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY", maximumFractionDigits: 0 });
-const categoryLabels = { watch: "腕表", bag: "箱包", jewelry: "饰品" };
+const categoryLabels = { watch: "腕表", bag: "箱包", jewelry: "饰品", other: "其他" };
 const actionLabels: Record<RecommendedAction, string> = {
   notify: "建议提醒",
   review: "需要复核",
   archive: "留档观察",
   skip: "默认跳过",
+};
+const filterLabels: Record<Filter, string> = {
+  all: "全部",
+  ...actionLabels,
+  pending: "待评分",
+  filtered: "已过滤",
 };
 const evidenceSourceLabels: Record<string, string> = { rule: "规则", knowledge: "知识", market: "市场", seller: "卖家", model: "模型" };
 
@@ -60,7 +67,7 @@ function ListingPhoto({ src, alt, category, variant }: { src?: string; alt: stri
   );
 }
 
-export function LeadWorkbench({ items, demoMode = true }: { items: AssessedListing[]; demoMode?: boolean }) {
+export function LeadWorkbench({ items, demoMode = true, confidenceThreshold = 55, sellerThresholds = DEFAULT_SELLER_RULE_THRESHOLDS }: { items: AssessedListing[]; demoMode?: boolean; confidenceThreshold?: number; sellerThresholds?: SellerRuleThresholds }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [selectedId, setSelectedId] = useState(items[0]?.listing.id ?? "");
   const [photoIndex, setPhotoIndex] = useState(0);
@@ -72,14 +79,31 @@ export function LeadWorkbench({ items, demoMode = true }: { items: AssessedListi
   const [feedbackNotice, setFeedbackNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [knowledgeCandidate, setKnowledgeCandidate] = useState(false);
 
+  // 「已过滤」线索默认隐藏：仅在「已过滤」标签下可见；默认「全部」只展示未被拦截的线索（含待评分）。
   const filtered = useMemo(
-    () => items.filter(({ assessment }) => filter === "all" || assessment.recommendedAction === filter),
+    () => items.filter(({ assessment }) => {
+      if (filter === "filtered") return Boolean(assessment.filterCode);
+      if (filter === "pending") return !assessment.filterCode && assessment.pending === true;
+      if (filter === "all") return !assessment.filterCode;
+      return !assessment.filterCode && assessment.recommendedAction === filter;
+    }),
     [filter, items],
   );
-  const selected = items.find(({ listing }) => listing.id === selectedId) ?? filtered[0] ?? items[0];
+  const selected = items.find(({ listing }) => listing.id === selectedId)
+    ?? filtered[0]
+    ?? items.find(({ assessment }) => !assessment.filterCode)
+    ?? items[0];
 
   const photos = selected?.listing.imageUrls ?? [];
-  const sellerTypeReason = selected ? nonPersonalSellerReason(selected.listing.seller) : null;
+  const sellerTypeReason = selected ? nonPersonalSellerReason(selected.listing.seller, sellerThresholds, selected.listing.category) : null;
+  const completeProfile = selected?.listing.seller.signalScope === "complete-profile";
+  const profileMixText = selected
+    ? Object.entries(selected.listing.seller.profileCategoryMix ?? {})
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 4)
+      .map(([name, count]) => `${name} ${count}`)
+      .join(" · ")
+    : "";
 
   useEffect(() => {
     if (!lightboxOpen) return;
@@ -159,8 +183,8 @@ export function LeadWorkbench({ items, demoMode = true }: { items: AssessedListi
             <MagnifyingGlass size={17} aria-hidden="true" />
             <span>搜索品牌、型号或卖家</span>
           </div>
-          <div className="filter-tabs" role="group" aria-label="按建议动作筛选">
-            {(["all", "notify", "review", "skip"] as const).map((value) => (
+          <div className="filter-tabs" role="group" aria-label="按状态与建议动作筛选">
+            {(["all", "notify", "review", "skip", "pending", "filtered"] as const).map((value) => (
               <button
                 className="filter-tab"
                 data-active={filter === value}
@@ -171,7 +195,7 @@ export function LeadWorkbench({ items, demoMode = true }: { items: AssessedListi
                 }}
                 type="button"
               >
-                {value === "all" ? "全部" : actionLabels[value]}
+                {filterLabels[value]}
               </button>
             ))}
           </div>
@@ -196,12 +220,14 @@ export function LeadWorkbench({ items, demoMode = true }: { items: AssessedListi
                 <span className="queue-item-main">
                   <span className="queue-item-topline">
                     <strong>{item.listing.brand} {item.listing.model}</strong>
-                    <b>{item.assessment.scores.totalOpportunity}</b>
+                    <b>{item.assessment.filterCode || item.assessment.pending ? "—" : item.assessment.scores.totalOpportunity}</b>
                   </span>
                   <span className="queue-item-title">{item.listing.title}</span>
                   <span className="queue-item-meta">{currency.format(item.listing.price)} · {item.listing.region}</span>
                   <RiskChip level={item.assessment.riskLevel} />
-                  {nonPersonalSellerReason(item.listing.seller) && <span className="seller-type-tag" title={nonPersonalSellerReason(item.listing.seller) ?? undefined}>疑似非个人卖家</span>}
+                  {item.assessment.filterCode && <span className="seller-type-tag">已过滤</span>}
+                  {item.assessment.pending && <span className="seller-type-tag">待模型评分</span>}
+                  {nonPersonalSellerReason(item.listing.seller, sellerThresholds, item.listing.category) && <span className="seller-type-tag" title={nonPersonalSellerReason(item.listing.seller, sellerThresholds, item.listing.category) ?? undefined}>疑似非个人卖家</span>}
                 </span>
               </button>
             );
@@ -235,15 +261,24 @@ export function LeadWorkbench({ items, demoMode = true }: { items: AssessedListi
         </header>
         <div className="lead-facts">
           <div><span>挂牌价</span><strong>{currency.format(listing.price)}</strong></div>
-          <div><span>参考区间</span><strong>{listing.marketReferencePrice ? currency.format(listing.marketReferencePrice) : "暂无"}</strong></div>
+          <div><span>市场参考价</span><strong>{listing.marketReferencePrice ? currency.format(listing.marketReferencePrice) : "暂无合格参考价"}</strong>{listing.marketReferenceVersion && <small>人工复核 v{listing.marketReferenceVersion} · <a href={listing.marketReferenceId ? `/knowledge#price-reference-${listing.marketReferenceId}` : "/knowledge"}>查看来源</a></small>}</div>
           <div><span>区域 / 距离</span><strong>{listing.region}{listing.distanceKm ? ` · ${listing.distanceKm}km` : ""}</strong></div>
           <div>
             <span>卖家</span>
-            <strong>{listing.seller.displayName} · 在架 {listing.seller.activeListingCount} 条</strong>
+            <strong>{listing.seller.displayName} · 已采集在架 {listing.seller.activeListingCount} 条</strong>
+            {listing.seller.signalScope === "complete-profile" ? (
+              <small className="seller-observed-types">
+                主页统计：已卖出 {listing.seller.completedSaleCount ?? "未知"} 件 · 在售 {listing.seller.onSaleCount ?? "未知"} 件{listing.seller.creditLevel ? ` · 信用 ${listing.seller.creditLevel}` : ""}{listing.seller.accountAgeDays !== undefined ? ` · 来闲鱼约 ${Math.max(1, Math.floor(listing.seller.accountAgeDays / 365))} 年` : ""}
+              </small>
+            ) : (
+              <small className="seller-observed-types">
+                已采集在架品类：{(["watch", "bag", "jewelry", "other"] as const).map((category) => `${categoryLabels[category]} ${listing.seller.observedCategoryCounts?.[category] ?? (category === listing.category ? listing.seller.sameCategoryCount ?? 0 : 0)} 条`).join(" · ")}
+              </small>
+            )}
+            {completeProfile && profileMixText && <small className="seller-observed-types">主页在售分类：{profileMixText}</small>}
             <small className="seller-observed-types">
-              已采集在架品类：{(["watch", "bag", "jewelry"] as const).map((category) => `${categoryLabels[category]} ${listing.seller.observedCategoryCounts?.[category] ?? (category === listing.category ? listing.seller.sameCategoryCount ?? 0 : 0)} 条`).join(" · ")}
+              {completeProfile ? "统计来自卖家主页的近期只读抓取，用于职业卖家判定" : `尚未取得卖家主页商品分布；当前仅有已入库的同品类 ${listing.seller.sameCategoryCount ?? 0} 条，不能据此确认卖家类型（规则阈值 ${sellerThresholds.sameCategoryMinCount} 条）。`}
             </small>
-            <small className="seller-observed-types">当前按昵称与地区匹配已采集记录，不代表完整主页或确认同一账号</small>
             {sellerTypeReason && <em className="seller-type-tag" title={sellerTypeReason}>疑似非个人卖家</em>}
           </div>
         </div>
@@ -284,26 +319,34 @@ export function LeadWorkbench({ items, demoMode = true }: { items: AssessedListi
         <div className="assessment-summary">
           <div className="opportunity-score">
             <span>综合机会分</span>
-            <strong>{assessment.scores.totalOpportunity}</strong>
+            <strong>{assessment.pending ? "—" : assessment.scores.totalOpportunity}</strong>
             <small>/ 100</small>
           </div>
           <div className="assessment-copy">
             <RiskChip level={assessment.riskLevel} />
+            {assessment.filterCode && <span className="seller-type-tag">前置过滤</span>}
+            {assessment.pending && <span className="seller-type-tag">待模型评分</span>}
             <h3>{actionLabels[assessment.recommendedAction]}</h3>
             <p>{assessment.summary}</p>
             <small>
-              {assessment.modelVersion ? `JEV 主评分 ${assessment.modelVersion}` : "仅规则评估（JEV 未返回结果）"}
+              {assessment.pending
+                ? assessment.pendingReason === "price-reference-changed" ? "参考价已变化，旧评分暂停使用；请手动重评或等待下一次扫描。" : "JEV 评分暂不可用（未配置、总开关关闭或评分失败）；线索已保留，评分恢复后自动补评。"
+                : assessment.filterCode
+                  ? "该线索由前置过滤器拦截，未调用 JEV 评分。"
+                  : assessment.modelVersion
+                    ? `JEV 主评分 ${assessment.modelVersion}`
+                    : "暂无模型评分记录"}
               {assessment.modelConfidence !== undefined ? ` · 模型置信度 ${assessment.modelConfidence}%` : ""}
-              {assessment.modelConfidence !== undefined && assessment.modelConfidence < 55 ? " · 建议人工复核" : ""}
+              {assessment.modelConfidence !== undefined && assessment.modelConfidence < confidenceThreshold ? " · 建议人工复核" : ""}
             </small>
           </div>
         </div>
 
         <div className="score-grid" aria-label="分项评分">
-          <div><span>个人卖家概率</span><strong>{assessment.scores.personalSeller}</strong><small>账号与文案</small></div>
-          <div><span>疑假风险</span><strong>{assessment.scores.authenticityRisk}</strong><small>越高风险越大</small></div>
-          <div><span>信息充分度</span><strong>{assessment.scores.informationCompleteness}</strong><small>图片与来源</small></div>
-          <div><span>利润机会</span><strong>{assessment.scores.profitOpportunity}</strong><small>仅作初筛参考</small></div>
+          <div><span>个人卖家概率</span><strong>{assessment.pending ? "—" : assessment.scores.personalSeller}</strong><small>账号与文案</small></div>
+          <div><span>疑假风险</span><strong>{assessment.pending ? "—" : assessment.scores.authenticityRisk}</strong><small>越高风险越大</small></div>
+          <div><span>信息充分度</span><strong>{assessment.pending ? "—" : assessment.scores.informationCompleteness}</strong><small>图片与来源</small></div>
+          <div><span>利润机会</span><strong>{assessment.pending ? "—" : assessment.scores.profitOpportunity}</strong><small>仅作初筛参考</small></div>
         </div>
 
         <div className="detail-columns">
@@ -313,7 +356,7 @@ export function LeadWorkbench({ items, demoMode = true }: { items: AssessedListi
                 <h3>判断依据</h3>
                 <p>按影响程度排序，结论可被人工纠正。</p>
               </div>
-              <span>{assessment.modelVersion ? `JEV 主评分 ${assessment.modelVersion}` : `规则 ${assessment.rulesetVersion}`}</span>
+              <span>{assessment.pending ? "评分待补" : assessment.filterCode ? "前置过滤" : assessment.modelVersion ? `JEV 主评分 ${assessment.modelVersion}` : `版本 ${assessment.rulesetVersion}`}</span>
             </div>
             <div className="evidence-list">
               {assessment.evidence.map((item) => {
@@ -324,7 +367,7 @@ export function LeadWorkbench({ items, demoMode = true }: { items: AssessedListi
                     <div>
                       <strong>{item.label}</strong>
                       <p>{item.detail}</p>
-                      <small>来源：{evidenceSourceLabels[item.source] ?? item.source} · 影响 {item.scoreImpact > 0 ? "+" : ""}{item.scoreImpact}</small>
+                      <small>来源：{evidenceSourceLabels[item.source] ?? item.source} · {item.scoreImpact === 0 ? "参考信号" : `影响 ${item.scoreImpact > 0 ? "+" : ""}${item.scoreImpact}`}</small>
                       {item.source === "model" && item.probabilities && (
                         <small>概率：{Object.entries(item.probabilities).map(([key, value]) => `${key} ${Math.round(value * 100)}%`).join(" · ")}</small>
                       )}
@@ -343,6 +386,7 @@ export function LeadWorkbench({ items, demoMode = true }: { items: AssessedListi
               ) : (
                 <p className="complete-message">当前基础信息较完整，仍需实物鉴定。</p>
               )}
+              {Boolean(assessment.knowledgeQuestions?.length) && <div className="knowledge-questions"><h4>当前知识追问</h4><ul>{assessment.knowledgeQuestions!.map((question) => <li key={question}>{question}</li>)}</ul><small>来自目前已批准知识，供人工沟通参考；不代表本次评估时已使用。</small></div>}
             </div>
 
             <div className="review-block">
