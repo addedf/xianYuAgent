@@ -1,0 +1,1 @@
+ALTER TABLE "rule_versions" ADD COLUMN "source_type" text DEFAULT 'manual' NOT NULL;

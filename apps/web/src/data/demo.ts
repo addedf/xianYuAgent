@@ -1,5 +1,4 @@
-import type { KnowledgeEntry, MarketplaceListing, MonitorTask } from "@/src/domain/listing";
-import { assessListing } from "@/src/domain/scoring";
+import type { AssessmentEvidence, KnowledgeEntry, ListingAssessment, MarketplaceListing, MonitorTask } from "@/src/domain/listing";
 
 export const demoListings: MarketplaceListing[] = [
   {
@@ -135,12 +134,126 @@ export const demoListings: MarketplaceListing[] = [
   },
 ];
 
-const demoNow = new Date("2026-08-30T10:30:00+08:00");
+// 演示模式使用手工预置的静态评估：分数与证据仅用于界面演示，
+// 与真实链路（规则事实 + JEV 主评分 + 收敛）的结构保持同构，但不依赖任何评分函数。
+const demoEvaluatedAt = "2026-08-30T10:30:00+08:00";
+const demoRulesetVersion = "demo-2026.09.24-v5";
+const demoModelVersion = "jev-demo-v5";
 
-export const assessedDemoListings = demoListings.map((listing) => ({
-  listing,
-  assessment: assessListing(listing, demoNow),
-}));
+function jevDimension(code: string, label: string, score: number, confidence: number, signal: string, probabilities: Record<string, number>): AssessmentEvidence {
+  return {
+    code: `jev-${code}`,
+    kind: "neutral",
+    label: `JEV 主评分：${label}`,
+    detail: `JEV 分 ${score}，置信度 ${confidence}%；主要 rubric 信号：${signal}。`,
+    scoreImpact: 0,
+    source: "model",
+    probabilities,
+  };
+}
+
+const rolexAssessment: ListingAssessment = {
+  listingId: "lead-rolex-001",
+  riskLevel: "low",
+  recommendedAction: "notify",
+  scores: { categoryMatch: 96, personalSeller: 90, authenticityRisk: 22, informationCompleteness: 82, profitOpportunity: 57, recency: 88, totalOpportunity: 81 },
+  evidence: [
+    { code: "seller-personal-story", kind: "positive", label: "存在具体个人使用叙述", detail: "命中：自用、结婚买的、不常戴。", scoreImpact: 0, source: "seller" },
+    { code: "listing-proof-and-serial", kind: "positive", label: "票据与编号信息较完整", detail: "已描述购买凭证与序列细节，仍需人工核对一致性。", scoreImpact: 0, source: "knowledge" },
+    { code: "listing-missing-information", kind: "missing", label: "关键信息仍不完整", detail: "建议补充：关键细节多角度图片。", scoreImpact: 0, source: "knowledge" },
+    jevDimension("personalSeller", "个人卖家概率", 90, 88, "长期自用叙述与少量在架商品", { 明确的个人卖家: 0.58, 可能是个人卖家: 0.24, 无法判断: 0.1, 疑似商家: 0.06, 职业卖家: 0.02 }),
+    jevDimension("authenticityRisk", "疑假风险", 22, 84, "票证齐全且价格贴近市场区间", { 基本无疑: 0.55, 低风险: 0.26, 存疑: 0.12, 高风险: 0.05, 几乎确定有假: 0.02 }),
+    jevDimension("informationCompleteness", "信息充分度", 82, 80, "缺少多角度实物细节图", { 信息非常充分: 0.5, 较充分: 0.28, 一般: 0.14, 不充分: 0.06, 严重缺失: 0.02 }),
+    { code: "jev-seller-type", kind: "neutral", label: "JEV 卖家类型判断", detail: "倾向 个人闲置，置信度 85%。", scoreImpact: 0, source: "model", probabilities: { 个人闲置: 0.7, 商家: 0.18, 同行: 0.08, 无法判断: 0.04 } },
+    { code: "jev-text-signals", kind: "neutral", label: "模型文案信号", detail: "JEV 文案信号作为评分证据，不是实物鉴定结论。", scoreImpact: 0, source: "model", probabilities: { 疑假暗示: 0.04, 个人使用故事: 0.91 } },
+  ],
+  missingInformation: ["关键细节多角度图片"],
+  suggestedQuestions: ["方便补充关键细节多角度图片吗？"],
+  summary: "个人卖家信号与价格空间较好，建议尽快人工查看并决定是否询价。",
+  evaluatedAt: demoEvaluatedAt,
+  rulesetVersion: demoRulesetVersion,
+  modelConfidence: 85,
+  modelVersion: demoModelVersion,
+  modelReviewRequired: false,
+};
+
+const lvAssessment: ListingAssessment = {
+  listingId: "lead-lv-002",
+  riskLevel: "insufficient",
+  recommendedAction: "review",
+  scores: { categoryMatch: 96, personalSeller: 72, authenticityRisk: 48, informationCompleteness: 30, profitOpportunity: 71, recency: 68, totalOpportunity: 64 },
+  evidence: [
+    { code: "seller-personal-story", kind: "positive", label: "存在具体个人使用叙述", detail: "命中：朋友送、放着不用。", scoreImpact: 0, source: "seller" },
+    { code: "listing-missing-information", kind: "missing", label: "关键信息仍不完整", detail: "建议补充：更完整的购买与使用说明、关键细节多角度图片、序列号或身份编码细节、购买凭证或来源证明、附件包装与维修史说明。", scoreImpact: 0, source: "knowledge" },
+    jevDimension("personalSeller", "个人卖家概率", 72, 78, "有闲置叙述但在架商品偏多", { 明确的个人卖家: 0.3, 可能是个人卖家: 0.34, 无法判断: 0.18, 疑似商家: 0.12, 职业卖家: 0.06 }),
+    jevDimension("authenticityRisk", "疑假风险", 48, 76, "无票证且图片缺失，无法核实", { 基本无疑: 0.12, 低风险: 0.24, 存疑: 0.34, 高风险: 0.2, 几乎确定有假: 0.1 }),
+    jevDimension("informationCompleteness", "信息充分度", 30, 80, "描述极短且没有任何图片", { 信息非常充分: 0.03, 较充分: 0.08, 一般: 0.18, 不充分: 0.41, 严重缺失: 0.3 }),
+    { code: "jev-seller-type", kind: "neutral", label: "JEV 卖家类型判断", detail: "倾向 个人闲置，置信度 58%。", scoreImpact: 0, source: "model", probabilities: { 个人闲置: 0.42, 商家: 0.26, 同行: 0.14, 无法判断: 0.18 } },
+    { code: "jev-text-signals", kind: "neutral", label: "模型文案信号", detail: "JEV 文案信号作为评分证据，不是实物鉴定结论。", scoreImpact: 0, source: "model", probabilities: { 疑假暗示: 0.12, 个人使用故事: 0.7 } },
+  ],
+  missingInformation: ["更完整的购买与使用说明", "关键细节多角度图片", "序列号或身份编码细节", "购买凭证或来源证明", "附件、包装与维修史说明"],
+  suggestedQuestions: ["方便补充更完整的购买与使用说明吗？", "方便补充关键细节多角度图片吗？", "方便补充序列号或身份编码细节吗？"],
+  summary: "存在信息缺口或中等风险，建议先补图和核对来源。",
+  evaluatedAt: demoEvaluatedAt,
+  rulesetVersion: demoRulesetVersion,
+  modelConfidence: 78,
+  modelVersion: demoModelVersion,
+  modelReviewRequired: false,
+};
+
+// 高仿词命中（复刻、专柜品质、一比一）在前置过滤阶段即被拦截，不进入 JEV 评分。
+const omegaAssessment: ListingAssessment = {
+  listingId: "lead-omega-003",
+  riskLevel: "high",
+  recommendedAction: "skip",
+  scores: { categoryMatch: 0, personalSeller: 0, authenticityRisk: 0, informationCompleteness: 0, profitOpportunity: 0, recency: 0, totalOpportunity: 0 },
+  evidence: [{
+    code: "listing-counterfeit-terms",
+    kind: "risk",
+    label: "前置过滤：高仿词硬阻断",
+    detail: "命中：复刻、专柜品质、一比一。该线索被前置过滤器拦截，未调用 JEV 评分；如属误判请在「已过滤」视图中人工纠正。",
+    scoreImpact: 0,
+    source: "rule",
+  }],
+  missingInformation: [],
+  suggestedQuestions: [],
+  summary: "已由前置过滤器拦截（高仿词硬阻断），默认不在线索列表展示；如属误杀请在「已过滤」视图中人工纠正。",
+  evaluatedAt: demoEvaluatedAt,
+  rulesetVersion: demoRulesetVersion,
+  filterCode: "listing-counterfeit-terms",
+};
+
+const cartierAssessment: ListingAssessment = {
+  listingId: "lead-cartier-004",
+  riskLevel: "low",
+  recommendedAction: "notify",
+  scores: { categoryMatch: 96, personalSeller: 84, authenticityRisk: 30, informationCompleteness: 78, profitOpportunity: 60, recency: 68, totalOpportunity: 76 },
+  evidence: [
+    { code: "seller-personal-story", kind: "positive", label: "存在具体个人使用叙述", detail: "描述包含具体使用与闲置背景。", scoreImpact: 0, source: "seller" },
+    { code: "listing-proof-and-serial", kind: "positive", label: "票据与编号信息较完整", detail: "已描述购买凭证与序列细节，仍需人工核对一致性。", scoreImpact: 0, source: "knowledge" },
+    { code: "listing-missing-information", kind: "missing", label: "关键信息仍不完整", detail: "建议补充：关键细节多角度图片。", scoreImpact: 0, source: "knowledge" },
+    jevDimension("personalSeller", "个人卖家概率", 84, 82, "换款出闲置叙述与佩戴痕迹一致", { 明确的个人卖家: 0.48, 可能是个人卖家: 0.28, 无法判断: 0.12, 疑似商家: 0.08, 职业卖家: 0.04 }),
+    jevDimension("authenticityRisk", "疑假风险", 30, 86, "票据与螺丝刀齐全，价格合理", { 基本无疑: 0.38, 低风险: 0.34, 存疑: 0.18, 高风险: 0.07, 几乎确定有假: 0.03 }),
+    jevDimension("informationCompleteness", "信息充分度", 78, 84, "缺少多角度实物细节图", { 信息非常充分: 0.36, 较充分: 0.34, 一般: 0.2, 不充分: 0.08, 严重缺失: 0.02 }),
+    { code: "jev-seller-type", kind: "neutral", label: "JEV 卖家类型判断", detail: "倾向 个人闲置，置信度 78%。", scoreImpact: 0, source: "model", probabilities: { 个人闲置: 0.62, 商家: 0.22, 同行: 0.1, 无法判断: 0.06 } },
+    { code: "jev-text-signals", kind: "neutral", label: "模型文案信号", detail: "JEV 文案信号作为评分证据，不是实物鉴定结论。", scoreImpact: 0, source: "model", probabilities: { 疑假暗示: 0.06, 个人使用故事: 0.82 } },
+  ],
+  missingInformation: ["关键细节多角度图片"],
+  suggestedQuestions: ["方便补充关键细节多角度图片吗？"],
+  summary: "个人卖家信号与价格空间较好，建议尽快人工查看并决定是否询价。",
+  evaluatedAt: demoEvaluatedAt,
+  rulesetVersion: demoRulesetVersion,
+  modelConfidence: 84,
+  modelVersion: demoModelVersion,
+  modelReviewRequired: false,
+};
+
+export const assessedDemoListings: Array<{ listing: MarketplaceListing; assessment: ListingAssessment }> = [
+  { listing: demoListings[0], assessment: rolexAssessment },
+  { listing: demoListings[1], assessment: lvAssessment },
+  { listing: demoListings[2], assessment: omegaAssessment },
+  { listing: demoListings[3], assessment: cartierAssessment },
+];
 
 export const demoKnowledgeEntries: KnowledgeEntry[] = [
   {
@@ -155,6 +268,10 @@ export const demoKnowledgeEntries: KnowledgeEntry[] = [
     sourceLabel: "商家经验·人工复核",
     updatedAt: "2026-08-29T18:20:00+08:00",
     usageCount: 28,
+    active: true,
+    effectChannel: "jev-context",
+    reviewStatus: "approved",
+    sourceType: "manual",
   },
   {
     id: "knowledge-002",
@@ -167,6 +284,10 @@ export const demoKnowledgeEntries: KnowledgeEntry[] = [
     sourceLabel: "历史线索归纳",
     updatedAt: "2026-08-28T11:05:00+08:00",
     usageCount: 61,
+    active: true,
+    effectChannel: "jev-context",
+    reviewStatus: "approved",
+    sourceType: "manual",
   },
   {
     id: "knowledge-003",
@@ -180,6 +301,10 @@ export const demoKnowledgeEntries: KnowledgeEntry[] = [
     sourceLabel: "商家手动录入",
     updatedAt: "2026-08-27T15:40:00+08:00",
     usageCount: 13,
+    active: true,
+    effectChannel: "jev-context",
+    reviewStatus: "approved",
+    sourceType: "manual",
   },
   {
     id: "knowledge-004",
@@ -193,6 +318,10 @@ export const demoKnowledgeEntries: KnowledgeEntry[] = [
     sourceLabel: "已确认反例案例",
     updatedAt: "2026-08-26T09:10:00+08:00",
     usageCount: 94,
+    active: true,
+    effectChannel: "manual-only",
+    reviewStatus: "approved",
+    sourceType: "manual",
   },
 ];
 
@@ -222,4 +351,3 @@ export const demoMonitorTasks: MonitorTask[] = [
     latestWatermark: "xy-918273002",
   },
 ];
-

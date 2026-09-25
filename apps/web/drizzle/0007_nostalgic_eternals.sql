@@ -1,0 +1,1 @@
+ALTER TABLE "market_price_references" ADD COLUMN "sample_evidence" jsonb DEFAULT '[]'::jsonb NOT NULL;

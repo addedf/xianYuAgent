@@ -61,6 +61,10 @@ export const marketplaceListings = pgTable(
     title: text("title").notNull(),
     description: text("description").notNull().default(""),
     price: numeric("price", { precision: 14, scale: 2 }).notNull(),
+    marketReferencePrice: numeric("market_reference_price", { precision: 14, scale: 2 }),
+    marketReferenceId: uuid("market_reference_id"),
+    marketReferenceVersion: integer("market_reference_version"),
+    marketReferenceExpiresAt: timestamp("market_reference_expires_at", { withTimezone: true }),
     region: text("region"),
     publishedAt: timestamp("published_at", { withTimezone: true }),
     firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
@@ -90,6 +94,9 @@ export const assessments = pgTable(
     modelConfidence: integer("model_confidence"),
     modelEvaluation: jsonb("model_evaluation"),
     inputFingerprint: text("input_fingerprint"),
+    filterCode: text("filter_code"),
+    knowledgeUsed: jsonb("knowledge_used").notNull().default([]),
+    priceReferenceUsed: jsonb("price_reference_used"),
     riskLevel: text("risk_level").notNull(),
     recommendedAction: text("recommended_action").notNull(),
     totalOpportunity: integer("total_opportunity").notNull(),
@@ -103,6 +110,15 @@ export const assessments = pgTable(
   (table) => [index("assessments_listing_idx").on(table.listingId), index("assessments_action_idx").on(table.recommendedAction), uniqueIndex("assessments_listing_input_unique").on(table.listingId, table.inputFingerprint)],
 );
 
+export const assessmentRuns = pgTable("assessment_runs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  listingId: uuid("listing_id").notNull().references(() => marketplaceListings.id, { onDelete: "cascade" }),
+  inputFingerprint: text("input_fingerprint").notNull(),
+  trigger: text("trigger").notNull(),
+  result: jsonb("result").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [index("assessment_runs_listing_idx").on(table.listingId, table.createdAt)]);
+
 export const knowledgeEntries = pgTable(
   "knowledge_entries",
   {
@@ -113,6 +129,7 @@ export const knowledgeEntries = pgTable(
     model: text("model"),
     title: text("title").notNull(),
     currentSummary: text("current_summary").notNull(),
+    effectChannel: text("effect_channel").notNull().default("manual-only"),
     confidence: text("confidence").notNull().default("draft"),
     reviewStatus: text("review_status").notNull().default("pending"),
     currentVersion: integer("current_version").notNull().default(1),
@@ -138,6 +155,41 @@ export const knowledgeVersions = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [uniqueIndex("knowledge_version_unique").on(table.knowledgeEntryId, table.version)],
+);
+
+export const marketPriceReferences = pgTable(
+  "market_price_references",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    listingId: uuid("listing_id").references(() => marketplaceListings.id, { onDelete: "set null" }),
+    scopeKey: text("scope_key").notNull(),
+    category: text("category").notNull(),
+    brand: text("brand").notNull(),
+    model: text("model").notNull(),
+    version: integer("version").notNull(),
+    amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
+    currency: text("currency").notNull().default("CNY"),
+    priceType: text("price_type").notNull(),
+    matchedModel: text("matched_model").notNull(),
+    conditionGrade: text("condition_grade").notNull().default("unknown"),
+    productionYear: integer("production_year"),
+    accessories: jsonb("accessories").notNull().default([]),
+    market: text("market").notNull().default("other"),
+    marketRegion: text("market_region"),
+    conditionNote: text("condition_note").notNull(),
+    sourceLabel: text("source_label").notNull(),
+    origin: text("origin").notNull().default("manual"),
+    sourceUrl: text("source_url"),
+    sampleCount: integer("sample_count").notNull().default(1),
+    sampleEvidence: jsonb("sample_evidence").notNull().default([]),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+    status: text("status").notNull().default("pending"),
+    changeReason: text("change_reason").notNull(),
+    approvedBy: text("approved_by"),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("market_reference_scope_version_unique").on(table.scopeKey, table.version), index("market_reference_listing_idx").on(table.listingId)],
 );
 
 export const feedbackEvents = pgTable(
@@ -178,6 +230,7 @@ export const ruleVersions = pgTable(
     scoreImpact: integer("score_impact").notNull(),
     explanationTemplate: text("explanation_template").notNull(),
     changeReason: text("change_reason").notNull(),
+    sourceType: text("source_type").notNull().default("manual"),
     approvedBy: text("approved_by"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

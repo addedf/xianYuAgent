@@ -1,10 +1,14 @@
 import { desc, eq, inArray } from "drizzle-orm";
 import type { AssessmentEvidence, AssessmentScores, Category, ListingAssessment, MarketplaceListing, RecommendedAction, RiskLevel } from "@/src/domain/listing";
-import { assessListing } from "@/src/domain/scoring";
+import { suggestedQuestionsFromMissing } from "@/src/domain/facts";
+import { selectKnowledge } from "@/src/domain/knowledge-context";
+import { pendingAssessment } from "@/src/domain/finalize";
 import { getDatabase } from "@/src/server/db/client";
 import { assessments, marketplaceListings, sellers } from "@/src/server/db/schema";
+import { getServerEnv } from "@/src/server/env";
+import { loadActiveKnowledgeEntries } from "@/src/server/knowledge-injection";
 
-const categories = new Set<Category>(["watch", "bag", "jewelry"]);
+const categories = new Set<Category>(["watch", "bag", "jewelry", "other"]);
 const riskLevels = new Set<RiskLevel>(["low", "insufficient", "medium", "high"]);
 const actions = new Set<RecommendedAction>(["notify", "review", "archive", "skip"]);
 
@@ -17,7 +21,15 @@ function asRecord(value: unknown): Record<string, unknown> {
 function asNumber(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
-function assessmentFromRow(row: typeof assessments.$inferSelect): ListingAssessment {
+function asNumberRecord(value: unknown): Record<string, number> | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const result: Record<string, number> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry === "number" && Number.isSafeInteger(entry) && entry >= 0) result[key] = entry;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+function assessmentFromRow(row: typeof assessments.$inferSelect, confidenceThreshold: number): ListingAssessment {
   const score = asRecord(row.scores);
   const evidence = Array.isArray(row.evidence) ? row.evidence.filter((item): item is AssessmentEvidence => {
     const value = asRecord(item);
@@ -34,6 +46,7 @@ function assessmentFromRow(row: typeof assessments.$inferSelect): ListingAssessm
     recency: asNumber(score.recency),
     totalOpportunity: row.totalOpportunity,
   };
+  const missingInformation = asStringArray(row.missingInformation);
   return {
     assessmentId: row.id,
     listingId: row.listingId,
@@ -41,15 +54,18 @@ function assessmentFromRow(row: typeof assessments.$inferSelect): ListingAssessm
     recommendedAction,
     scores,
     evidence,
-    missingInformation: asStringArray(row.missingInformation),
-    suggestedQuestions: asStringArray(row.missingInformation).slice(0, 3).map((item) => `方便补充${item}吗？`),
+    missingInformation,
+    suggestedQuestions: suggestedQuestionsFromMissing(missingInformation),
     summary: row.summary,
     evaluatedAt: row.evaluatedAt.toISOString(),
     rulesetVersion: row.rulesetVersion,
     modelConfidence: row.modelConfidence ?? undefined,
     modelVersion: row.modelVersion ?? undefined,
     modelEvaluation: row.modelEvaluation && typeof row.modelEvaluation === "object" ? asRecord(row.modelEvaluation) : undefined,
-    modelReviewRequired: row.modelConfidence !== null && row.modelConfidence < 55,
+    modelReviewRequired: row.modelConfidence !== null && row.modelConfidence < confidenceThreshold,
+    filterCode: row.filterCode ?? undefined,
+    knowledgeUsed: asStringArray(row.knowledgeUsed),
+    priceReferenceUsed: row.priceReferenceUsed && typeof row.priceReferenceUsed === "object" ? asRecord(row.priceReferenceUsed) : undefined,
   };
 }
 
@@ -83,21 +99,18 @@ export async function loadLatestAssessedListings(limit = 80, listingId?: string,
     if (!assessmentRow && !includeUnassessed) return [];
     const rawPayload = asRecord(row.listing.rawPayload);
     const profileSnapshot = asRecord(row.sellerProfileSnapshot);
-    const category = categories.has(row.listing.category as Category) ? row.listing.category as Category : "bag";
+    const category = categories.has(row.listing.category as Category) ? row.listing.category as Category : "other";
     const sellerSignalSnapshot = asRecord(rawPayload.sellerSignals);
     const freshSignals = row.listing.sellerId ? sellerSignals.get(row.listing.sellerId) : undefined;
     const hasCompleteProfile = profileSnapshot.completeness === "complete-profile";
-    const activeListingCount = hasCompleteProfile
-      ? asNumber(profileSnapshot.activeListingCount, freshSignals?.activeListingCount ?? asNumber(sellerSignalSnapshot.activeListingCount))
-      : freshSignals?.activeListingCount ?? asNumber(sellerSignalSnapshot.activeListingCount, asNumber(profileSnapshot.activeListingCount));
-    const sameCategoryCount = hasCompleteProfile
-      ? asNumber(profileSnapshot.sameCategoryCount, freshSignals?.categoryCounts.get(category) ?? asNumber(sellerSignalSnapshot.sameCategoryCount))
-      : freshSignals?.categoryCounts.get(category) ?? asNumber(sellerSignalSnapshot.sameCategoryCount);
-    const sameCategoryRatio = hasCompleteProfile
-      ? asNumber(profileSnapshot.sameCategoryRatio, activeListingCount > 0 ? sameCategoryCount / activeListingCount : 0)
+    const activeListingCount = freshSignals?.activeListingCount
+      ?? asNumber(sellerSignalSnapshot.activeListingCount, asNumber(profileSnapshot.activeListingCount));
+    const sameCategoryCount = category === "other" ? 0
+      : freshSignals?.categoryCounts.get(category) ?? asNumber(sellerSignalSnapshot.sameCategoryCount, asNumber(profileSnapshot.sameCategoryCount));
+    const sameCategoryRatio = category === "other" ? 0
       : freshSignals
-      ? (freshSignals.activeListingCount > 0 ? sameCategoryCount / freshSignals.activeListingCount : 0)
-      : asNumber(sellerSignalSnapshot.sameCategoryRatio, asNumber(profileSnapshot.sameCategoryRatio));
+        ? (freshSignals.activeListingCount > 0 ? sameCategoryCount / freshSignals.activeListingCount : 0)
+        : asNumber(sellerSignalSnapshot.sameCategoryRatio, asNumber(profileSnapshot.sameCategoryRatio));
     const signalScope = hasCompleteProfile
       ? "complete-profile" as const
       : freshSignals || sellerSignalSnapshot.activeListingCount !== undefined || profileSnapshot.completeness === "observed-listings"
@@ -113,6 +126,8 @@ export async function loadLatestAssessedListings(limit = 80, listingId?: string,
       title: row.listing.title,
       description: row.listing.description,
       price: Number(row.listing.price),
+      ...(row.listing.marketReferencePrice !== null && row.listing.marketReferenceId !== null && row.listing.marketReferenceVersion !== null && row.listing.marketReferenceExpiresAt && row.listing.marketReferenceExpiresAt.getTime() > Date.now()
+        ? { marketReferencePrice: Number(row.listing.marketReferencePrice), marketReferenceId: row.listing.marketReferenceId, marketReferenceVersion: row.listing.marketReferenceVersion } : {}),
       region: row.listing.region || "地区未知",
       publishedAt: row.listing.publishedAt?.toISOString() ?? new Date(0).toISOString(),
       firstSeenAt: row.listing.firstSeenAt.toISOString(),
@@ -134,18 +149,40 @@ export async function loadLatestAssessedListings(limit = 80, listingId?: string,
         sameCategoryRatio,
         sameCategoryCount,
         observedCategoryCounts: freshSignals ? Object.fromEntries(freshSignals.categoryCounts) : undefined,
+        profileCategoryMix: hasCompleteProfile ? asNumberRecord(profileSnapshot.categoryMix) : undefined,
         ...(profileSnapshot.completedSaleCountVerified === true && typeof profileSnapshot.completedSaleCount === "number" && Number.isSafeInteger(profileSnapshot.completedSaleCount) && profileSnapshot.completedSaleCount >= 0
           ? { completedSaleCount: profileSnapshot.completedSaleCount, completedSaleCountVerified: true }
           : {}),
-        identityScope: row.sellerExternalId?.startsWith("nickname-") ? "nickname-region" as const : "unknown" as const,
+        ...(hasCompleteProfile && typeof profileSnapshot.onSaleCount === "number" && Number.isSafeInteger(profileSnapshot.onSaleCount) && profileSnapshot.onSaleCount >= 0
+          ? { onSaleCount: profileSnapshot.onSaleCount }
+          : {}),
+        ...(hasCompleteProfile && typeof profileSnapshot.creditLevel === "string" && profileSnapshot.creditLevel.trim()
+          ? { creditLevel: profileSnapshot.creditLevel.trim() }
+          : {}),
+        identityScope: row.sellerExternalId?.startsWith("xianyu-user-")
+          ? "stable-platform-id" as const
+          : row.sellerExternalId?.startsWith("nickname-") ? "nickname-region" as const : "unknown" as const,
         signalScope,
         templateSimilarity: 0,
         hasPersonalStorySignals: false,
         hasNaturalSceneSignals: false,
       },
     };
-    return [{ listing, assessment: assessmentRow ? assessmentFromRow(assessmentRow) : assessListing(listing) }];
+    const previousPrice = asRecord(assessmentRow?.priceReferenceUsed);
+    const previousPriceVersion = asNumber(previousPrice.version);
+    const stalePriceReference = Boolean(assessmentRow) && (previousPriceVersion !== (listing.marketReferenceVersion ?? 0)
+      || (listing.marketReferenceId !== undefined && previousPrice.id !== listing.marketReferenceId));
+    const assessment = assessmentRow && !stalePriceReference ? assessmentFromRow(assessmentRow, getServerEnv().TYPESAFE_CONFIDENCE_THRESHOLD) : pendingAssessment(listing);
+    if (stalePriceReference) {
+      assessment.pendingReason = "price-reference-changed";
+      assessment.summary = "市场参考价已变更、停用或过期，旧评分暂不作为当前判断；请重新评分。";
+      assessment.evidence[0].detail = assessment.summary;
+    }
+    return [{ listing, assessment }];
   });
+  const activeKnowledge = await loadActiveKnowledgeEntries();
+  for (const item of assessed) item.assessment.knowledgeQuestions = selectKnowledge(activeKnowledge, item.listing)
+    .filter((entry) => entry.entryType === "question").map((entry) => `${entry.title}：${entry.summary}`);
   return assessed.sort((a, b) => b.assessment.scores.totalOpportunity - a.assessment.scores.totalOpportunity
     || Date.parse(b.listing.firstSeenAt) - Date.parse(a.listing.firstSeenAt));
 }

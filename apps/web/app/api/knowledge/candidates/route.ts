@@ -31,12 +31,13 @@ export async function POST(request: Request) {
       const title = typeof rawCandidate.label === "string" && rawCandidate.label.trim()
         ? rawCandidate.label.trim().slice(0, 80)
         : candidate.feedback.finalLabel?.trim().slice(0, 80) || `线索经验：${candidate.listing.title}`.slice(0, 80);
-      const category = ["watch", "bag", "jewelry"].includes(candidate.listing.category) ? candidate.listing.category : "watch";
+      const category = ["watch", "bag", "jewelry", "other"].includes(candidate.listing.category) ? candidate.listing.category : "other";
       const [entry] = await tx.insert(knowledgeEntries).values({
         entryType: "case",
         category,
         title,
         currentSummary: text,
+        effectChannel: "manual-only",
         confidence: "draft",
         reviewStatus: "pending",
         currentVersion: 1,

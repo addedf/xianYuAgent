@@ -21,14 +21,16 @@ Next.js Web / API（127.0.0.1:3000）
 独立本地只读采集器（127.0.0.1:8000）
   ├─ 仅接受持有共享服务令牌的 Web 服务端请求
   ├─ 用户本人在 Web 内扫码，并在闲鱼 App 完成确认或正常核身
-  └─ 搜索结果写入本机 PostgreSQL 的 xianyu_products 暂存表
+  ├─ 搜索结果写入本机 PostgreSQL 的 xianyu_products 暂存表
+  └─ 对本次新增记录补抓商品详情，对新卖家补抓主页快照（限频、冷却、可关闭），
+     详情原文与卖家平台用户 ID 落 xianyu_products，主页统计落 xianyu_seller_profiles
 ```
 
 项目不包含 Docker 配置。未配置 PostgreSQL、Redis 或企业微信时，Web 仍可以演示数据启动；健康检查会明确显示哪些正式能力尚未连接。
 
 ## 核心模块
 
-- `src/domain`：纯领域模型与可解释评分，区分“个人卖家概率”“信息缺失”和“疑似假货风险”。
+- `src/domain`：纯领域模型：事实构建（facts）、前置过滤（pre-filters）、评分收敛（finalize）；区分“结构化事实”“前置过滤”和“JEV 主评分”的职责。
 - `src/server/db`：Drizzle schema 与 PostgreSQL 连接；所有重要判断、规则、知识和投递都保留版本或审计记录。
 - `src/server/notifications`：企业微信消息格式、Webhook 白名单、超时和错误归一化。
 - `src/server/sources`：本地采集器契约、回环地址限制、商品规范化与去重入库。
@@ -38,17 +40,38 @@ Next.js Web / API（127.0.0.1:3000）
 
 ## 评估链路与一条商品的生命周期
 
+商品评估是一条单向四段流水线；规则引擎不再打分，只提供事实与过滤，JEV 是唯一裁判。
+
 ```text
-采集适配器 → 标准化商品 → 内容指纹三分支 upsert → 规则评估 →（可选 JEV 第二意见）→ 人工复核
-     │                               ├─ 达标：进入通知 outbox
-     │                               └─ 纠正：生成经验候选
-     ▼
-原始证据与来源保留              人工审批 → 新知识/规则版本 → 后续评估引用
+采集适配器 → 标准化商品 → 内容指纹 upsert
+  │
+  ├─ Stage 0 前置过滤 runPreFilters（版本化配置，读 rule_definitions 失败回退默认值）
+  │    listing-counterfeit-terms（高仿词硬阻断，high）
+  │    listing-extreme-price-gap（价格 < 参考价 18%，medium）
+  │    seller-non-personal-thresholds（同品类/已售观察信号达阈值，medium）
+  │    命中 → 写过滤评估记录（filter_code + skip + 原因证据），不调用 JEV；
+  │           线索默认隐藏，可在「已过滤」视图人工纠正
+  │
+  ├─ Stage 1 事实构建 buildRuleFacts（纯事实，不打分）
+  │    issues / positives / missing / suggestedQuestions / hardFacts
+  │    （品类匹配、利润空间、时效等客观计算保留为硬事实）
+  │
+  ├─ Stage 2 JEV 评分 evaluateListing（唯一裁判；state 由 facts 构建，不传规则分）
+  │    不可用/失败/限频 → 不写评估记录，线索保持「待模型评分」，
+  │    恢复后的下一次扫描经 inputFingerprint 自动补评
+  │
+  └─ Stage 3 收敛 finalizeAssessment（守护栏唯一一份）
+       JEV 三维分数直接采用，无混合公式；总分 = JEV 三维 70%（0.30/0.30/0.10）
+       + 硬事实 30%（品类 0.10 / 利润 0.15 / 时效 0.05）
+       模型置信度 < TYPESAFE_CONFIDENCE_THRESHOLD 时 notify/skip 封顶为 review
+       │
+       ├─ 达标：进入通知 outbox
+       └─ 纠正：生成经验候选
 ```
 
-商品内容版本只评估一次：新商品或 `title | price | description | region | imageCount` 指纹变化时追加一条 `assessments` 历史；指纹不变时只刷新 `last_seen_at`，页面读取直接查每条商品最新评估，不在渲染时调用评分或模型。JEV 通过服务端 `evaluators/typesafe` 适配器接入，默认关闭，受 `system_controls` 的 `jev-evaluation` 总开关、范围、进程内令牌桶和超时约束；异常时保存规则结果并继续导入。
+自动采集对同一评分指纹只评估一次：新商品或内容、规则、知识、关联参考价版本变化时追加一条 `assessments` 历史（唯一键 `listing_id + input_fingerprint`）；指纹不变且已有模型评分时跳过，页面读取直接查每条商品最新评估，不在渲染时调用评分或模型。用户明确发起手动重评时可再次调用 JEV，每次运行另存 `assessment_runs` 供审计。`filter_code` 非空的记录表示前置过滤拦截，其指纹还包含过滤器配置本身，配置版本变化会自动重过滤。JEV 不可用时商品照常入库，评分挂起并在健康面板、扫描结果、手动重评接口（503）三处明确提示，不做任何规则兜底评分。
 
-JEV state 只包含公开商品文本、价格信号、结构化信息、卖家统计和规则分，不包含卖家身份、联系方式、Cookie、Token、聊天内容、原帖 URL 或图片 URL。JEV 的问题和选项来自版本化的本地问题集：三组五档 Score rubric、卖家类型 Choice 和两个 Noul 判断；候选商品仍由采集器、监控关键词和规则引擎产生，JEV 不生成生产选项。个人卖家、疑假风险和信息充分度由 JEV 主评分，规则分作为结构化证据与轻先验，之后仍执行卖家阈值限分；高仿词硬阻断不可解除，模型置信度低于阈值时动作封顶为人工复核。完整结构化回答和 state 指纹随评估落库，便于人工复盘。
+JEV state 只包含公开商品文本（URL/邮箱/号码/联系方式凭据脱敏后）、价格信号、结构化事实、卖家观察统计与人工维护阈值，不包含卖家身份、Cookie、Token、聊天内容、原帖 URL 或图片 URL。问题与选项来自版本化的本地问题集：三组五档 Score rubric、卖家类型 Choice 和两个 Noul 判断；五档概率分布按期望值归一化为 0-100 分（原始档位保留在 raw 中审计）。个人卖家、疑假风险和信息充分度由 JEV 唯一裁决；facts 证据行固定为“参考信号”（scoreImpact=0），不再参与分数合成。完整结构化回答和 state 指纹随评估落库，便于人工复盘。
 
 评估结果必须能回答三个问题：为什么入选、哪些信息缺失、哪些风险会阻止提醒。人工纠正只生成候选，不会直接改写生产规则。
 
@@ -59,10 +82,12 @@ JEV state 只包含公开商品文本、价格信号、结构化信息、卖家�
 1. 人工在商品评估中标记“判断正确”“需要纠正”或补充证据。
 2. 系统创建 `feedback_events`，并可生成 `knowledgeCandidate`。
 3. 候选在知识台中经过人工编辑和批准。
-4. 批准后创建不可变的 `knowledge_versions` 或 `rule_versions`。
+4. 知识录入先创建待复核版本，批准动作再追加审批版本；可执行规则修改也追加 `rule_versions`。
 5. 后续评估记录引用所用版本，便于复盘某次判断为什么发生。
 
 知识条目可表达品牌识别要点、品类成色标准、价格区间、常见话术风险和回收经验；规则条目负责机器可执行的阈值与阻断条件。两者分开，避免把经验文字直接当作硬规则。
+
+知识页按阶段展示生效规则总账，包括数据库规则版本、代码固定阈值、JEV 版本及收敛权重。数据库规则的版本历史展示条件、原因与内容来源；AI 辅助拟定的规则须由管理员确认保存。人工或 AI 辅助录入的知识都先进入待复核；只有 active、已批准且属于 JEV 上下文通道的条目才按品类、品牌和型号注入，评估保存所用知识版本。参考价另存结构化来源与审批版本，仅人工关联、准入合格的参考价用于前置价格过滤。
 
 ## 外部项目参考边界
 

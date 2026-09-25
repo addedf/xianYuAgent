@@ -1,11 +1,14 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { BookOpenText, Check, FunnelSimple, Plus, ShieldCheck } from "@phosphor-icons/react";
 import { ConfidenceChip } from "@/components/status-chip";
 import type { KnowledgeEntry } from "@/src/domain/listing";
+import { PIPELINE_RULE_CODES, defaultRuleViews, type KnowledgeRuleView } from "@/src/domain/rule-views";
 import type { SellerRuleThresholds } from "@/src/domain/seller-rules";
-import type { KnowledgeCandidateView, KnowledgeRuleView } from "@/src/server/knowledge";
+import type { KnowledgeCandidateView, KnowledgeVersionView } from "@/src/server/knowledge";
 
 const typeLabels: Record<KnowledgeEntry["entryType"], string> = {
   identification: "鉴别点",
@@ -14,38 +17,27 @@ const typeLabels: Record<KnowledgeEntry["entryType"], string> = {
   question: "沟通追问",
   case: "案例",
 };
-const categoryLabels = { watch: "腕表", bag: "箱包", jewelry: "饰品" };
+const categoryLabels = { watch: "腕表", bag: "箱包", jewelry: "饰品", other: "其他" };
 const sellerRuleCode = "seller-non-personal-thresholds";
-const defaultSellerRule: KnowledgeRuleView = {
-  id: "seller-rule-default",
-  code: sellerRuleCode,
-  title: "疑似非个人卖家判定阈值",
-  category: "seller",
-  enabled: true,
-  version: 1,
-  conditions: { sameCategoryMinCount: 6, completedSaleMinCount: 100 },
-  scoreImpact: -20,
-  explanation: "同品类已采集商品数达到阈值，或已核实售出数超过阈值时，标记为疑似非个人卖家并降低个人卖家概率。",
-  changeReason: "系统默认阈值；保存后会记录为可追溯版本。",
-};
 
 export function KnowledgeWorkbench({
   initialEntries,
+  initialHistory,
   initialRules,
   initialCandidates,
   initialThresholds,
   demoMode,
 }: {
   initialEntries: KnowledgeEntry[];
+  initialHistory: Record<string, KnowledgeVersionView[]>;
   initialRules: KnowledgeRuleView[];
   initialCandidates: KnowledgeCandidateView[];
   initialThresholds: SellerRuleThresholds;
   demoMode: boolean;
 }) {
   const [entries, setEntries] = useState(initialEntries);
-  const [rules, setRules] = useState(initialRules.length > 0 ? initialRules : [defaultSellerRule]);
+  const [rules, setRules] = useState(initialRules.length > 0 ? initialRules : defaultRuleViews());
   const [candidates, setCandidates] = useState(initialCandidates);
-  const [thresholds, setThresholds] = useState(initialThresholds);
   const [filter, setFilter] = useState<"all" | KnowledgeEntry["entryType"]>("all");
   const [showArchived, setShowArchived] = useState(false);
   const [selectedId, setSelectedId] = useState(initialEntries[0]?.id ?? "");
@@ -54,15 +46,34 @@ export function KnowledgeWorkbench({
   const [busy, setBusy] = useState(false);
   const [ruleDraft, setRuleDraft] = useState(initialThresholds);
   const [ruleReason, setRuleReason] = useState("");
+  const [pipelineReason, setPipelineReason] = useState("");
+  const [pipelineSourceType, setPipelineSourceType] = useState<"manual" | "ai-assisted">("manual");
+  const [approvalReason, setApprovalReason] = useState("");
+  const [opsOpen, setOpsOpen] = useState(false);
+  const [counterfeitDraft, setCounterfeitDraft] = useState(() => {
+    const rule = initialRules.find((item) => item.code === "listing-counterfeit-terms");
+    const terms = (rule?.conditions as { terms?: string[] } | undefined)?.terms;
+    return Array.isArray(terms) ? terms.join("、") : "";
+  });
+  const [priceRatioDraft, setPriceRatioDraft] = useState(() => {
+    const rule = initialRules.find((item) => item.code === "listing-extreme-price-gap");
+    return Number((rule?.conditions as { priceRatioBelow?: number } | undefined)?.priceRatioBelow ?? 0.18);
+  });
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const router = useRouter();
+
+  useEffect(() => {
+    // 从总账页「去维护」跳转过来时自动展开操作区。
+    if (window.location.hash === "#rule-ops") setOpsOpen(true);
+  }, []);
 
   const filtered = useMemo(
     () => entries.filter((entry) => (showArchived ? entry.active === false : entry.active !== false) && (filter === "all" || entry.entryType === filter)),
     [entries, filter, showArchived],
   );
   const selected = entries.find((entry) => entry.id === selectedId) ?? filtered[0];
-  const sellerRule = rules.find((rule) => rule.code === sellerRuleCode) ?? defaultSellerRule;
+  const sellerRule = rules.find((rule) => rule.code === sellerRuleCode) ?? defaultRuleViews()[0];
 
   async function saveKnowledge(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -72,8 +83,10 @@ export function KnowledgeWorkbench({
       entryType: String(form.get("entryType")) as KnowledgeEntry["entryType"],
       category: String(form.get("category")) as KnowledgeEntry["category"],
       brand: String(form.get("brand") ?? "").trim() || undefined,
+      model: String(form.get("model") ?? "").trim() || undefined,
       title: String(form.get("title") ?? "").trim(),
       summary: String(form.get("summary") ?? "").trim(),
+      effectChannel: String(form.get("effectChannel")) as KnowledgeEntry["effectChannel"],
       changeReason: String(form.get("changeReason") ?? "").trim(),
     };
     if (!payload.title || !payload.summary || !payload.changeReason) return;
@@ -83,21 +96,22 @@ export function KnowledgeWorkbench({
       const response = await fetch(formEntry ? "/api/knowledge" : "/api/knowledge", {
         method: formEntry ? "PATCH" : "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(formEntry ? { ...payload, id: formEntry.id, confidence: String(form.get("confidence")) } : payload),
+        body: JSON.stringify(formEntry ? { ...payload, id: formEntry.id, confidence: String(form.get("confidence")) } : { ...payload, sourceType: String(form.get("sourceType")) }),
       });
       const result = await response.json().catch(() => ({})) as { error?: string; entry?: KnowledgeEntry };
       if (!response.ok || !result.entry) throw new Error(result.error ?? "知识保存失败。");
       if (formEntry) {
         setEntries((current) => current.map((entry) => entry.id === result.entry!.id ? result.entry! : entry));
-        setSavedMessage("知识已更新，并保留了版本记录。");
+        setSavedMessage("知识已更新为待复核版本；人工批准后才进入评分。");
       } else {
         setEntries((current) => [result.entry!, ...current]);
         setSelectedId(result.entry.id);
         setFilter("all");
-        setSavedMessage("知识草稿已保存到 PostgreSQL。");
+        setSavedMessage("知识草稿已保存到 PostgreSQL；人工批准后才进入评分。");
       }
       setShowForm(false);
       setFormEntry(null);
+      router.refresh();
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "知识保存失败。");
     } finally {
@@ -122,18 +136,75 @@ export function KnowledgeWorkbench({
       });
       const result = await response.json().catch(() => ({})) as { error?: string; version?: number; thresholds?: SellerRuleThresholds };
       if (!response.ok || !result.thresholds || !result.version) throw new Error(result.error ?? "规则保存失败。");
-      setThresholds(result.thresholds);
       setRuleDraft(result.thresholds);
       setRules((current) => current.map((rule) => rule.code === sellerRuleCode
         ? { ...rule, version: result.version!, conditions: result.thresholds!, changeReason: ruleReason.trim(), enabled: true }
         : rule));
       setRuleReason("");
       setSavedMessage(`卖家判定规则已保存为 v${result.version}。再次评分时会使用新阈值。`);
+      router.refresh();
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "规则保存失败。");
     } finally {
       setBusy(false);
     }
+  }
+
+  async function savePipelineRule(code: "listing-counterfeit-terms" | "listing-extreme-price-gap") {
+    if (busy || demoMode) return;
+    if (!pipelineReason.trim()) { setErrorMessage("请填写规则调整原因。"); return; }
+    const terms = counterfeitDraft.split(/[、,，\n]/).map((value) => value.trim()).filter(Boolean);
+    const payload = code === "listing-counterfeit-terms"
+      ? { code, terms, changeReason: pipelineReason.trim(), sourceType: pipelineSourceType }
+      : { code, priceRatioBelow: priceRatioDraft, changeReason: pipelineReason.trim(), sourceType: pipelineSourceType };
+    setBusy(true);
+    setErrorMessage(null);
+    try {
+      const response = await fetch("/api/knowledge/pipeline-rule", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
+      const result = await response.json() as { error?: string; rule?: { code: string; version: number; conditions: unknown; enabled: boolean; changeReason: string } };
+      if (!response.ok || !result.rule) throw new Error(result.error ?? "规则保存失败。");
+      const saved = result.rule;
+      setRules((current) => current.map((rule) => rule.code === code ? { ...rule, ...saved } : rule));
+      setPipelineReason("");
+      setSavedMessage(`${code === "listing-counterfeit-terms" ? "高仿词" : "价格比例"}规则已保存为 v${saved.version}${saved.enabled ? "" : "，仍处于停用状态"}。`);
+      router.refresh();
+    } catch (error) { setErrorMessage(error instanceof Error ? error.message : "规则保存失败。"); }
+    finally { setBusy(false); }
+  }
+
+  async function togglePipelineRule(code: string, enabled: boolean) {
+    if (busy || demoMode) return;
+    if (!pipelineReason.trim()) { setErrorMessage("启用或停用规则也需要填写调整原因。"); return; }
+    setBusy(true);
+    setErrorMessage(null);
+    try {
+      const response = await fetch("/api/knowledge/pipeline-rule", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ code, enabled, changeReason: pipelineReason.trim() }) });
+      const result = await response.json() as { error?: string; rule?: { code: string; version: number; conditions: unknown; enabled: boolean; changeReason: string } };
+      if (!response.ok || !result.rule) throw new Error(result.error ?? "规则状态更新失败。");
+      const saved = result.rule;
+      setRules((current) => current.map((rule) => rule.code === code ? { ...rule, ...saved } : rule));
+      setPipelineReason("");
+      setSavedMessage(`${enabled ? "已启用" : "已停用"}规则 ${code}，保留版本记录。`);
+      router.refresh();
+    } catch (error) { setErrorMessage(error instanceof Error ? error.message : "规则状态更新失败。"); }
+    finally { setBusy(false); }
+  }
+
+  async function approveEntry(entry: KnowledgeEntry) {
+    if (busy || demoMode) return;
+    if (!approvalReason.trim()) { setErrorMessage("请填写本次人工复核依据。"); return; }
+    setBusy(true);
+    setErrorMessage(null);
+    try {
+      const response = await fetch("/api/knowledge", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: entry.id, approve: true, changeReason: approvalReason.trim() }) });
+      const result = await response.json() as { error?: string; entry?: KnowledgeEntry };
+      if (!response.ok || !result.entry) throw new Error(result.error ?? "知识批准失败。");
+      setEntries((current) => current.map((item) => item.id === entry.id ? result.entry! : item));
+      setApprovalReason("");
+      setSavedMessage("知识已由人工批准；后续匹配线索会使用当前版本。");
+      router.refresh();
+    } catch (error) { setErrorMessage(error instanceof Error ? error.message : "知识批准失败。"); }
+    finally { setBusy(false); }
   }
 
   async function addCandidateToKnowledge(candidate: KnowledgeCandidateView) {
@@ -150,6 +221,7 @@ export function KnowledgeWorkbench({
       if (!response.ok || !result.entryId) throw new Error(result.error ?? "候选转存失败。");
       setCandidates((current) => current.filter((item) => item.id !== candidate.id));
       setSavedMessage("候选已转为知识草稿，在知识列表中可以继续编辑和维护。");
+      router.refresh();
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "候选转存失败。");
     } finally {
@@ -167,11 +239,12 @@ export function KnowledgeWorkbench({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ id: entry.id, active, changeReason: active ? "人工恢复知识条目" : "人工归档知识条目" }),
       });
-      const result = await response.json().catch(() => ({})) as { error?: string };
-      if (!response.ok) throw new Error(result.error ?? "知识归档失败。");
-      setEntries((current) => current.map((item) => item.id === entry.id ? { ...item, active, version: item.version + 1, updatedAt: new Date().toISOString() } : item));
+      const result = await response.json().catch(() => ({})) as { error?: string; entry?: KnowledgeEntry };
+      if (!response.ok || !result.entry) throw new Error(result.error ?? "知识归档失败。");
+      setEntries((current) => current.map((item) => item.id === entry.id ? result.entry! : item));
       if (!active) setSelectedId(entries.find((item) => item.id !== entry.id && item.active !== false)?.id ?? "");
       setSavedMessage(active ? "知识已恢复，并保留了版本记录。" : "知识已归档，版本记录仍保留在数据库中。");
+      router.refresh();
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "知识归档失败。");
     } finally {
@@ -200,12 +273,20 @@ export function KnowledgeWorkbench({
       <div className="knowledge-admin-panels">
         <section className="knowledge-rule-panel">
           <header className="knowledge-panel-heading">
-            <div><h2>当前执行规则</h2><p>这条规则会进入规则评分与 JEV 上下文，保存后再触发重新评分生效。</p></div>
+            <div><h2>规则维护</h2><p>调整卖家阈值、高仿词表、价格比例与规则启停，全部改动记录为可追溯版本。</p></div>
             <span>v{sellerRule.version}</span>
           </header>
+          <div className="rule-ledger-link-row">
+            <Link className="button button-secondary button-small" href="/knowledge/rules">查看生效规则总账 →</Link>
+          </div>
+          <details className="rule-ops" id="rule-ops" open={opsOpen} onToggle={(event) => setOpsOpen((event.target as HTMLDetailsElement).open)}>
+            <summary>规则维护操作<small>卖家阈值 · 高仿词 · 价格比例 · 启用/停用</small></summary>
           <form className="seller-rule-form" onSubmit={saveSellerRule}>
             <label>同品类已采集商品数达到
               <span className="seller-rule-number"><input type="number" min={1} max={10_000} value={ruleDraft.sameCategoryMinCount} onChange={(event) => setRuleDraft((current) => ({ ...current, sameCategoryMinCount: Number(event.target.value) }))} disabled={demoMode || busy} /><small>条</small></span>
+            </label>
+          <label>主页在售数量达到
+              <span className="seller-rule-number"><input type="number" min={1} max={1_000_000} value={ruleDraft.onSaleMinCount} onChange={(event) => setRuleDraft((current) => ({ ...current, onSaleMinCount: Number(event.target.value) }))} disabled={demoMode || busy} /><small>件</small></span>
             </label>
           <label>已核实售出数超过
               <span className="seller-rule-number"><input type="number" min={0} max={10_000_000} value={ruleDraft.completedSaleMinCount} onChange={(event) => setRuleDraft((current) => ({ ...current, completedSaleMinCount: Number(event.target.value) }))} disabled={demoMode || busy} /><small>件</small></span>
@@ -215,19 +296,31 @@ export function KnowledgeWorkbench({
             </label>
             <button className="button button-primary button-small" type="submit" disabled={demoMode || busy}>{busy ? "保存中…" : "保存新版本"}</button>
           </form>
-          <div className="knowledge-rule-list" aria-label="数据库中的规则">
-            {rules.map((rule) => (
-              <article className="knowledge-rule-row" key={rule.id}>
-                <div><strong>{rule.title}</strong><small>{rule.code} · v{rule.version} · {rule.enabled ? "启用" : "停用"}</small></div>
-                <p>{rule.code === sellerRuleCode
-                  ? `同品类 ${thresholds.sameCategoryMinCount} 条或已核实售出超过 ${thresholds.completedSaleMinCount} 件，标记疑似非个人卖家。`
-                  : rule.explanation || JSON.stringify(rule.conditions)}</p>
-                {rule.code !== sellerRuleCode && <code>{JSON.stringify(rule.conditions)}</code>}
-                <small>调整记录：{rule.changeReason || "尚无修改说明"}</small>
-              </article>
-            ))}
-            {rules.length === 0 && <p className="empty-state">还没有已保存的规则。</p>}
+          <div className="pipeline-rule-editor">
+            <label>高仿词表（用顿号、逗号或换行分隔）
+              <textarea value={counterfeitDraft} onChange={(event) => setCounterfeitDraft(event.target.value)} rows={3} disabled={demoMode || busy} />
+            </label>
+            <label>价格过滤比例
+              <span className="seller-rule-number"><input type="number" min="0.01" max="0.99" step="0.01" value={priceRatioDraft} onChange={(event) => setPriceRatioDraft(Number(event.target.value))} disabled={demoMode || busy} /><small>挂牌价 / 参考价</small></span>
+            </label>
+            <label>调整原因<input value={pipelineReason} onChange={(event) => setPipelineReason(event.target.value)} maxLength={500} placeholder="保存或切换规则状态时必填" disabled={demoMode || busy} /></label>
+            <label>规则内容来源<select value={pipelineSourceType} onChange={(event) => setPipelineSourceType(event.target.value as "manual" | "ai-assisted")} disabled={demoMode || busy}><option value="manual">人工拟定</option><option value="ai-assisted">AI 辅助拟定，由我确认保存</option></select></label>
+            <div className="form-actions">
+              <button className="button button-secondary button-small" type="button" disabled={demoMode || busy} onClick={() => void savePipelineRule("listing-counterfeit-terms")}>保存高仿词新版本</button>
+              <button className="button button-secondary button-small" type="button" disabled={demoMode || busy} onClick={() => void savePipelineRule("listing-extreme-price-gap")}>保存价格比例新版本</button>
+            </div>
           </div>
+            <div className="rule-ops-state">
+              <p className="rule-ops-state-hint">数据库前置规则启停（需先填写上方调整原因）：</p>
+              {rules.filter((rule) => PIPELINE_RULE_CODES.includes(rule.code)).map((rule) => (
+                <span className="rule-ops-state-item" key={rule.code}>
+                  <strong>{rule.title}</strong>
+                  <small>v{rule.version} · {rule.enabled ? "生效中" : "已停用"}</small>
+                  <button className="button button-ghost button-small" type="button" disabled={demoMode || busy} onClick={() => void togglePipelineRule(rule.code, !rule.enabled)}>{rule.enabled ? "停用" : "启用"}</button>
+                </span>
+              ))}
+            </div>
+          </details>
         </section>
 
         <section className="knowledge-candidate-panel">
@@ -274,12 +367,15 @@ export function KnowledgeWorkbench({
                   {Object.entries(typeLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}
                 </select></label>
                 <label>品类<select name="category" defaultValue={formEntry?.category ?? "watch"}>
-                  <option value="watch">腕表</option><option value="bag">箱包</option><option value="jewelry">饰品</option>
+                  <option value="watch">腕表</option><option value="bag">箱包</option><option value="jewelry">饰品</option><option value="other">其他</option>
                 </select></label>
               </div>
               <label>品牌范围<input name="brand" defaultValue={formEntry?.brand ?? ""} maxLength={80} placeholder="留空表示通用品类经验" /></label>
+              <label>型号或款式范围<input name="model" defaultValue={formEntry?.model ?? ""} maxLength={120} placeholder="留空表示该品牌下通用" /></label>
               <label>标题<input name="title" required maxLength={80} defaultValue={formEntry?.title ?? ""} placeholder="例如：日志型表扣补拍要求" /></label>
               <label>经验说明<textarea name="summary" required maxLength={4000} rows={4} defaultValue={formEntry?.summary ?? ""} placeholder="写清适用范围、判断依据和不能推出的结论。" /></label>
+              <label>生效通道<select name="effectChannel" defaultValue={formEntry?.effectChannel ?? "jev-context"}><option value="jev-context">人工批准后进入 JEV 上下文</option><option value="manual-only">仅供人工查阅</option></select></label>
+              {!formEntry && <label>来源<select name="sourceType" defaultValue="manual"><option value="manual">人工录入</option><option value="ai-assisted">AI 辅助补充（先存草稿）</option></select></label>}
               {formEntry && <label>维护状态<select name="confidence" defaultValue={formEntry.confidence}><option value="draft">草稿</option><option value="reviewed">已复核</option><option value="verified">已验证</option></select></label>}
               <label>修改原因<input name="changeReason" required maxLength={500} placeholder={formEntry ? "本次修改依据" : "新增来源或适用范围"} /></label>
               <div className="form-actions">
@@ -294,7 +390,7 @@ export function KnowledgeWorkbench({
               <button className="knowledge-entry-row" data-active={selected?.id === entry.id} data-archived={entry.active === false} key={entry.id} onClick={() => setSelectedId(entry.id)} type="button">
                 <span className="knowledge-type-mark" aria-hidden="true"><BookOpenText size={18} /></span>
                 <span><span className="entry-row-topline"><strong>{entry.title}</strong><ConfidenceChip value={entry.confidence} /></span>
-                  <small>{typeLabels[entry.entryType]} · {entry.brand ?? categoryLabels[entry.category]} · v{entry.version}{entry.active === false ? " · 已归档" : ""}</small>
+                  <small>{typeLabels[entry.entryType]} · {entry.brand ?? categoryLabels[entry.category]}{entry.model ? ` · ${entry.model}` : ""} · v{entry.version} · {entry.active === false ? "已归档" : entry.reviewStatus === "approved" ? entry.effectChannel === "jev-context" ? "评分生效中" : "人工查阅" : "待人工复核"}{entry.sourceType === "ai-assisted" ? " · AI 辅助" : ""}</small>
                 </span>
               </button>
             ))}
@@ -312,17 +408,31 @@ export function KnowledgeWorkbench({
               <button className="button button-secondary button-small" type="button" disabled={demoMode || busy} onClick={() => openEditForm(selected)}>编辑知识</button>
               <button className="button button-ghost button-small" type="button" disabled={demoMode || busy} onClick={() => void setEntryActive(selected, selected.active === false)}>{selected.active === false ? "恢复" : "归档"}</button>
             </div>
+            {selected.reviewStatus !== "approved" && selected.active !== false && <div className="knowledge-approval">
+              <p>这条知识目前是草稿，不参与评分。核对内容、来源和适用范围后批准。</p>
+              <label>复核依据<input value={approvalReason} onChange={(event) => setApprovalReason(event.target.value)} maxLength={500} placeholder="例如：已核对同型号案例和适用范围" disabled={demoMode || busy} /></label>
+              <button className="button button-primary button-small" type="button" disabled={demoMode || busy} onClick={() => void approveEntry(selected)}>人工批准当前版本</button>
+            </div>}
             <div className="knowledge-meta">
               <div><span>适用品类</span><strong>{categoryLabels[selected.category]}</strong></div>
               <div><span>品牌范围</span><strong>{selected.brand ?? "通用品类规则"}</strong></div>
+              <div><span>型号范围</span><strong>{selected.model ?? "通用"}</strong></div>
               <div><span>当前版本</span><strong>v{selected.version}</strong></div>
-              <div><span>规则引用</span><strong>{selected.usageCount} 次</strong></div>
+              <div><span>当前评估引用</span><strong>{selected.usageCount} 条</strong></div>
+              <div><span>生效通道</span><strong>{selected.effectChannel === "jev-context" ? "JEV 上下文" : "人工查阅"}</strong></div>
+              <div><span>复核状态</span><strong>{selected.reviewStatus === "approved" ? "已批准" : "待复核"}</strong></div>
             </div>
             <section className="knowledge-content"><h3>当前标准</h3><p>{selected.summary}</p></section>
-            <section className="knowledge-governance"><ShieldCheck size={22} weight="fill" aria-hidden="true" /><div><h3>修改会保留历史版本</h3><p>知识草稿供人工维护和复核；只有结构化执行规则会直接影响评分。规则候选可以先整理成知识，再决定是否调整执行阈值。</p></div></section>
+            <section className="knowledge-governance"><ShieldCheck size={22} weight="fill" aria-hidden="true" /><div><h3>修改会保留历史版本</h3><p>条目经人工批准后可进入 JEV 参考上下文；结构化过滤规则独立控制是否拦截。AI 补充内容先进入待复核列表。</p></div></section>
             <section className="version-timeline"><h3>版本与来源</h3><ol>
-              <li><span>v{selected.version}</span><div><strong>{selected.sourceLabel}</strong><p>当前版本 · {new Date(selected.updatedAt).toLocaleDateString("zh-CN")}</p></div></li>
-              {selected.version > 1 && <li><span>v{selected.version - 1}</span><div><strong>历史版本</strong><p>保留旧内容和修改原因，可在数据库中审计。</p></div></li>}
+              {(initialHistory[selected.id] ?? []).map((version) => <li key={version.version}>
+                <span>v{version.version}</span>
+                <div><strong>{version.sourceType === "ai-assisted" ? "AI 辅助补充" : "人工维护"}{version.approvedBy ? " · 已批准" : " · 待复核"}</strong>
+                  <p>{new Date(version.createdAt).toLocaleString("zh-CN", { hour12: false })} · {version.changeReason}</p>
+                  <p>{typeof version.content.summary === "string" ? version.content.summary : "该版本记录状态或范围变更"}</p>
+                </div>
+              </li>)}
+              {!initialHistory[selected.id]?.length && <li><span>v{selected.version}</span><div><strong>{selected.sourceLabel}</strong><p>演示或存量记录</p></div></li>}
             </ol></section>
           </> : <div className="empty-state">选择一条知识查看范围、版本与来源。</div>}
         </section>

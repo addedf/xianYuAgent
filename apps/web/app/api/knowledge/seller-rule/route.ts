@@ -10,6 +10,7 @@ export const runtime = "nodejs";
 const payloadSchema = z.object({
   sameCategoryMinCount: z.number().int().min(1).max(10_000),
   completedSaleMinCount: z.number().int().min(0).max(10_000_000),
+  onSaleMinCount: z.number().int().min(1).max(1_000_000),
   changeReason: z.string().trim().min(1).max(500),
 });
 
@@ -19,7 +20,11 @@ export async function POST(request: Request) {
 
   try {
     const payload = payloadSchema.parse(await request.json().catch(() => null));
-    const thresholds = { sameCategoryMinCount: payload.sameCategoryMinCount, completedSaleMinCount: payload.completedSaleMinCount };
+    const thresholds = {
+      sameCategoryMinCount: payload.sameCategoryMinCount,
+      completedSaleMinCount: payload.completedSaleMinCount,
+      onSaleMinCount: payload.onSaleMinCount,
+    };
     const { db } = getDatabase();
     const version = await db.transaction(async (tx) => {
       const [definition] = await tx.select().from(ruleDefinitions)
@@ -44,7 +49,7 @@ export async function POST(request: Request) {
         version: nextVersion,
         conditions: thresholds,
         scoreImpact: -20,
-        explanationTemplate: "同品类已采集商品数达到阈值，或已核实售出数超过阈值时，标记疑似非个人卖家并降低个人卖家概率。",
+        explanationTemplate: "同品类已采集商品数、卖家主页在售数或已核实售出数达到阈值时，标记疑似非个人卖家并降低个人卖家概率。",
         changeReason: payload.changeReason,
         approvedBy: "local-user",
       });
