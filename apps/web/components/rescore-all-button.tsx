@@ -53,7 +53,7 @@ export function RescoreAllButton({ demoMode }: { demoMode: boolean }) {
 
   return (
     <div className="rescore-all-control">
-      <button className="button button-primary" type="button" disabled={demoMode || state.running} onClick={rescoreAll} title={demoMode ? "演示数据不能写入评分结果" : "使用当前规则与 JEV 对数据库全部商品重新评分"}>
+      <button className="button button-primary" type="button" disabled={demoMode || state.running} onClick={rescoreAll} title={demoMode ? "演示数据不能写入评分结果" : "主动对全部商品重新调用 JEV；每条会消耗一次模型调用，并保存运行记录"}>
         {state.running ? <CircleNotch size={17} className="spin" aria-hidden="true" /> : <ArrowClockwise size={17} aria-hidden="true" />}
         {state.running ? `重评分 ${state.done}/${state.total}` : "重新评分全部入库商品"}
       </button>

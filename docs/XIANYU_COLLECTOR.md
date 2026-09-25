@@ -6,8 +6,24 @@ Web 项目不保存闲鱼 Cookie，也不实现核身或反爬逻辑。管理员
 
 当前适配器参考 `superboyyy/xianyu_spider` 的数据契约：
 
-- `POST /search/`：触发关键词、价格、地区和最新排序搜索，返回 `new_record_ids`。
-- `xianyu_products` 表：按新增 ID 读取标题、价格、地区、卖家昵称、链接、图片与发布时间。
+- `POST /search/`：触发关键词、价格、地区和最新排序搜索，返回 `new_record_ids`，以及详情/主页补抓审计计数（`enriched_details`、`seller_profiles`）。
+- `xianyu_products` 表：按新增 ID 读取标题、价格、地区、卖家昵称、链接、图片、发布时间，以及详情补抓列 `detail_json`（详情原始 JSON）、`detail_fetched_at`、`seller_user_id`（卖家平台用户 ID）。
+- `xianyu_seller_profiles` 表：按 `seller_user_id` 关联卖家主页快照，`profile_json` 汇总卖出件数、在售件数、信用等级、注册时长与在售分类分布，`head_json`/`items_json` 保留原始响应。
+
+### 详情与主页补抓（2026-09 新增）
+
+搜索保存后，采集器对**库里还没有可用详情的记录**补抓商品详情页，对新卖家补抓卖家主页（头部 + 在售第一页），使 Web 端能够以稳定卖家 ID 和主页统计执行“非个人卖家”判定。限频与暂停边界：
+
+- 详情补抓：每次搜索最多 40 条，请求间 0.8–2s 随机抖动，`XIANYU_COLLECTOR_ENRICH_ENABLED=false` 可整体关闭；已有详情的记录不重复消耗请求。
+- 主页补抓：每卖家 7 天冷却期，单次搜索最多 10 个卖家，卖家间 1–2.5s 抖动，`XIANYU_COLLECTOR_PROFILE_ENABLED=false` 可整体关闭。
+- **风控惩罚（RGV587/滑块）处理**：详情或主页请求命中 `FAIL_SYS_USER_VALIDATE` 惩罚响应时，不重试、不把惩罚页当数据入库；详情连续 3 次被拦截即熔断本轮，主页立即停止本轮剩余抓取。被拦截的记录下轮搜索会自动重试，通常等待数十分钟后风控自行解除。
+- **登录态保护**：`probe_login` 只在平台明确返回会话过期时才清除登录 Cookie；风控惩罚、网络抖动等暂时性失败仅标记 `probe_failed` 并保留登录态。会话清除时自动留有 `data/session.backup.json` 备份，误清除可人工恢复。
+- **字段来源（2026-09 实测）**：主页头部 `mtop.idle.web.user.page.head` 提供在售数（`module.tabs.item.number`）、信用等级（`module.shop.level`）、好评率、粉丝数、昵称、属地、简介；**「已卖出件数」不在 PC 头部**，改从商品详情响应的 `data.sellerDO.hasSoldNumInteger` 提取（详情页卖家卡片公开展示），随详情入库写入卖家画像，驱动「已核验卖出>100 件」判定。卖家在售列表接口名尚未确认（现名返回 `API_NOT_FOUNDED`，进程内自动停用），确认后更新 `xianyu/mtop.py` 的 `USER_PAGE_ITEMS_API` 即可。
+- **「疑似非个人卖家」阈值规则**共三条：同品类已采集 ≥6 条、**主页在售 ≥50 件**、已核验卖出 >100 件（`seller-non-personal-thresholds`，阈值在经验知识库页可调；数据库中的旧版本规则行缺 `onSaleMinCount` 时自动回填默认 50）。主页在售数与详情卖家已售取数优先级：主页统计 → 本商品详情卖家卡片 → 既有卖家画像。
+- 全部只读、不重试轰炸、失败不阻断搜索主流程；原始 JSON 落库，线上字段名变化时只需调整解析，不重复请求平台。`POST /search/` 响应带 `enriched_details` / `blocked_details` 计数。
+- 主页接口名（`mtop.idle.web.user.page.head` / `mtop.idle.web.user.page.items`）来自 goofish PC 端流量，如平台调整接口名，在 `xianyu/mtop.py` 常量处更新。
+- 调试命令：`python spider.py user <卖家ID>` 抓取单个卖家主页并输出脱敏摘要。
+- Web 端导入调用采集器的超时为 300s（详情+主页补抓串行执行，一轮完整搜索可能超过两分钟）。
 
 没有复制上游的签名、登录或抓取实现。Web 发起官方窗口登录属于本项目平台适配器的本机能力，不把未实现的短信直连接口当作上游公开契约。
 
@@ -96,7 +112,7 @@ Set-Location -LiteralPath 'D:\A-projeck\xianYuAgent\.local\xianyu_spider'
 
 ## 5. 导入真实商品
 
-打开 Web 的“连接”页面，在“闲鱼真实数据入口”填写关键词、品类、城市和价格范围，点击“搜索并导入”。流程为：
+打开 Web 的“连接”页面，在“闲鱼真实数据入口”按行输入最多 5 个关键词，选择全国、省份或该省下的城市，再填写价格范围并点击“搜索并导入”。每个关键词独立、依次触发一次只读搜索；重复商品按平台商品 ID 入库去重。商品品类从标题、详情和搜索词推断，无法确认时标记为“其他”，不会把“其他”用于同品类卖家集中度判断。缺席次数只在关键词、地点、价格、时间和页数均相同的后续扫描中累计。当前采集器仅接收单个省市条件，区县和距离筛选尚未接入。流程为：
 
 ```text
 管理员浏览器 → Web 发起登录（服务令牌）→ 本机采集器打开闲鱼官方窗口

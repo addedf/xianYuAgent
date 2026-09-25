@@ -1,15 +1,19 @@
-import { createHash } from "node:crypto";
 import { z } from "zod";
-import { fuseAssessment, withModelUnavailable } from "@/src/domain/fusion";
-import { assessListing } from "@/src/domain/scoring";
+import { buildRuleFacts } from "@/src/domain/facts";
+import { finalizeAssessment, filteredAssessment } from "@/src/domain/finalize";
+import { runPreFilters } from "@/src/domain/pre-filters";
+import { knowledgeHash, knowledgeUsed, selectKnowledge } from "@/src/domain/knowledge-context";
+import { priceReferenceSnapshot } from "@/src/domain/price-reference";
 import { adminApiError } from "@/src/server/auth/admin-request";
 import { getDatabase } from "@/src/server/db/client";
-import { assessments } from "@/src/server/db/schema";
+import { assessments, assessmentRuns } from "@/src/server/db/schema";
 import { evaluateListing } from "@/src/server/evaluators/typesafe";
-import { QUESTIONS_VERSION } from "@/src/server/evaluators/typesafe/questions";
 import { getServerEnv } from "@/src/server/env";
 import { loadLatestAssessedListings } from "@/src/server/listings";
 import { loadSellerRuleSettings } from "@/src/server/seller-rule-settings";
+import { loadPreFilterSettings } from "@/src/server/pre-filter-settings";
+import { loadActiveKnowledgeEntries } from "@/src/server/knowledge-injection";
+import { filteredAssessmentFingerprint, scoredAssessmentFingerprint } from "@/src/server/sources/xianyu-spider-persistence";
 
 const payloadSchema = z.object({ listingId: z.uuid() });
 
@@ -24,45 +28,65 @@ export async function POST(request: Request) {
     const [item] = await loadLatestAssessedListings(1, payload.data.listingId, true);
     if (!item) return Response.json({ error: "没有找到这条入库商品。" }, { status: 404 });
 
-    const sellerRuleThresholds = (await loadSellerRuleSettings()).thresholds;
-    const ruleAssessment = assessListing(item.listing, new Date(), sellerRuleThresholds);
-    const evaluation = await evaluateListing(item.listing, ruleAssessment, { mode: "manual", sellerRuleThresholds });
+    const sellerRuleSettings = await loadSellerRuleSettings();
+    const preFilterSettings = await loadPreFilterSettings();
+    const activePreFilterConfigs = { ...preFilterSettings.configs, sellerThresholds: sellerRuleSettings.enabled === false ? null : sellerRuleSettings.thresholds };
     const env = getServerEnv();
-    const assessment = evaluation
-      ? fuseAssessment(ruleAssessment, evaluation, env.TYPESAFE_CONFIDENCE_THRESHOLD, item.listing.seller, sellerRuleThresholds)
-      : env.TYPESAFE_ENABLED === "true" ? withModelUnavailable(ruleAssessment) : ruleAssessment;
-    const inputFingerprint = createHash("sha256").update(JSON.stringify({
-      listing: {
-        externalId: item.listing.externalId,
-        category: item.listing.category,
-        brand: item.listing.brand,
-        model: item.listing.model ?? null,
-        title: item.listing.title,
-        description: item.listing.description,
-        price: item.listing.price,
-        imageUrls: item.listing.imageUrls.map((url) => url.split(/[?#]/, 1)[0]).sort(),
-      },
-      seller: {
-        activeListingCount: item.listing.seller.activeListingCount,
-        sameCategoryCount: item.listing.seller.sameCategoryCount,
-        sameCategoryRatio: item.listing.seller.sameCategoryRatio,
-        completedSaleCount: item.listing.seller.completedSaleCount ?? null,
-        completedSaleCountVerified: item.listing.seller.completedSaleCountVerified === true,
-        identityScope: item.listing.seller.identityScope ?? "unknown",
-        signalScope: item.listing.seller.signalScope ?? "nickname-only",
-      },
-      sellerRuleThresholds,
-      rulesetVersion: assessment.rulesetVersion,
-      questionsVersion: QUESTIONS_VERSION,
-    })).digest("hex").slice(0, 32);
     const { db } = getDatabase();
+
+    // 与导入管道同一套流程：前置过滤 → 事实构建 → JEV 评分 → 收敛落库。
+    const filterHit = runPreFilters(item.listing, activePreFilterConfigs);
+    if (filterHit) {
+      const inputFingerprint = filteredAssessmentFingerprint(item.listing, filterHit, activePreFilterConfigs);
+      const record = filteredAssessment(item.listing, filterHit);
+      const values = {
+        listingId: item.listing.id,
+        inputFingerprint,
+        rulesetVersion: record.rulesetVersion,
+        modelVersion: null,
+        modelConfidence: null,
+        modelEvaluation: null,
+        filterCode: record.filterCode ?? null,
+        knowledgeUsed: [],
+        priceReferenceUsed: priceReferenceSnapshot(item.listing),
+        riskLevel: record.riskLevel,
+        recommendedAction: record.recommendedAction,
+        totalOpportunity: record.scores.totalOpportunity,
+        scores: record.scores,
+        evidence: record.evidence,
+        missingInformation: record.missingInformation,
+        summary: record.summary,
+        evaluatedAt: new Date(record.evaluatedAt),
+        updatedAt: new Date(),
+      };
+      await db.insert(assessments).values(values).onConflictDoUpdate({ target: [assessments.listingId, assessments.inputFingerprint], set: values });
+      await db.insert(assessmentRuns).values({ listingId: item.listing.id, inputFingerprint, trigger: "manual", result: { filterCode: filterHit.code, knowledgeUsed: [], priceReferenceUsed: values.priceReferenceUsed } });
+      return Response.json({ ok: true, jevEvaluated: false, filterCode: filterHit.code, totalOpportunity: 0 });
+    }
+
+    const facts = buildRuleFacts(item.listing, new Date());
+    const selectedKnowledge = selectKnowledge(await loadActiveKnowledgeEntries(), item.listing);
+    const evaluation = await evaluateListing(item.listing, facts, { mode: "manual", sellerRuleThresholds: activePreFilterConfigs.sellerThresholds, knowledge: selectedKnowledge });
+    // JEV 不可用或失败时明确报错，不保存任何规则兜底结果；线索保持待评分状态。
+    if (!evaluation) {
+      return Response.json({ error: "JEV 不可用或评分失败，本次未保存评分；线索保持待评分状态。" }, { status: 503 });
+    }
+
+    const assessment = finalizeAssessment(item.listing, facts, evaluation, { confidenceThreshold: env.TYPESAFE_CONFIDENCE_THRESHOLD });
+    assessment.knowledgeUsed = knowledgeUsed(selectedKnowledge);
+    assessment.priceReferenceUsed = priceReferenceSnapshot(item.listing) ?? undefined;
+    if (selectedKnowledge.length > 0) assessment.evidence.push({ code: "jev-knowledge-context", kind: "neutral", label: "已向 JEV 提供知识经验", detail: `本次注入 ${selectedKnowledge.length} 条已批准知识；这只表示进入评分输入，不代表模型逐条采纳。`, scoreImpact: 0, source: "knowledge" });
+    const inputFingerprint = scoredAssessmentFingerprint(item.listing, activePreFilterConfigs.sellerThresholds, knowledgeHash(selectedKnowledge));
     const values = {
       listingId: item.listing.id,
+      inputFingerprint,
       rulesetVersion: assessment.rulesetVersion,
       modelVersion: assessment.modelVersion ?? null,
       modelConfidence: assessment.modelConfidence ?? null,
       modelEvaluation: assessment.modelEvaluation ?? null,
-      inputFingerprint,
+      filterCode: null,
+      knowledgeUsed: assessment.knowledgeUsed,
+      priceReferenceUsed: assessment.priceReferenceUsed ?? null,
       riskLevel: assessment.riskLevel,
       recommendedAction: assessment.recommendedAction,
       totalOpportunity: assessment.scores.totalOpportunity,
@@ -77,8 +101,13 @@ export async function POST(request: Request) {
       target: [assessments.listingId, assessments.inputFingerprint],
       set: values,
     });
+    await db.insert(assessmentRuns).values({ listingId: item.listing.id, inputFingerprint, trigger: "manual", result: {
+      modelVersion: assessment.modelVersion, scores: assessment.scores, evidence: assessment.evidence,
+      knowledgeUsed: assessment.knowledgeUsed, priceReferenceUsed: assessment.priceReferenceUsed ?? null,
+      evaluatedAt: assessment.evaluatedAt,
+    } });
 
-    return Response.json({ ok: true, jevEvaluated: evaluation !== null, totalOpportunity: assessment.scores.totalOpportunity });
+    return Response.json({ ok: true, jevEvaluated: true, totalOpportunity: assessment.scores.totalOpportunity });
   } catch {
     return Response.json({ error: "重新评分失败，请检查数据库和 JEV 配置后重试。" }, { status: 503 });
   }

@@ -4,7 +4,19 @@
 
 ## macOS 本机真实模式
 
-本仓库在 macOS 上使用项目目录下的本地服务进程，真实模式不使用演示数据。首次准备完成后，每次启动按下面顺序打开四个终端窗口；所有服务只监听回环地址。
+本仓库在 macOS 上使用项目目录下的本地服务进程，真实模式不使用演示数据。
+
+一键方式：`scripts/dev-mac.sh` 按下述顺序启动全部服务（已运行的自动跳过），并支持查看与停止：
+
+```bash
+scripts/dev-mac.sh start    # 启动 PostgreSQL、Redis、迁移、采集器、worker、Web
+scripts/dev-mac.sh status   # 查看各服务状态
+scripts/dev-mac.sh stop     # 停止采集器、worker、Web（PostgreSQL/Redis 保持运行）
+```
+
+以下为各步骤的手动命令，用于单独重启某个服务。
+
+首次准备完成后，每次启动按下面顺序打开四个终端窗口；所有服务只监听回环地址。
 
 ### 1. 启动 PostgreSQL 与 Redis
 

@@ -1,4 +1,4 @@
-export const CATEGORY_VALUES = ["watch", "bag", "jewelry"] as const;
+export const CATEGORY_VALUES = ["watch", "bag", "jewelry", "other"] as const;
 export type Category = (typeof CATEGORY_VALUES)[number];
 
 export type EvidenceKind = "positive" | "risk" | "missing" | "neutral";
@@ -15,7 +15,11 @@ export interface SellerProfile {
   sameCategoryCount?: number;
   completedSaleCount?: number;
   completedSaleCountVerified?: boolean;
+  onSaleCount?: number;
+  creditLevel?: string;
   observedCategoryCounts?: Partial<Record<Category, number>>;
+  /** 主页在售列表的原始分类分布（平台分类名 → 数量），仅 complete-profile 时有值。 */
+  profileCategoryMix?: Record<string, number>;
   identityScope?: "stable-platform-id" | "nickname-region" | "unknown";
   signalScope?: "observed-listings" | "complete-profile" | "nickname-only";
   templateSimilarity: number;
@@ -35,6 +39,8 @@ export interface MarketplaceListing {
   description: string;
   price: number;
   marketReferencePrice?: number;
+  marketReferenceId?: string;
+  marketReferenceVersion?: number;
   region: string;
   distanceKm?: number;
   publishedAt: string;
@@ -88,6 +94,14 @@ export interface ListingAssessment {
   modelVersion?: string;
   modelEvaluation?: Record<string, unknown>;
   modelReviewRequired?: boolean;
+  /** 命中的前置过滤器代码；非空表示该记录是过滤器拦截记录而非 JEV 评分。 */
+  filterCode?: string;
+  knowledgeUsed?: string[];
+  knowledgeQuestions?: string[];
+  priceReferenceUsed?: Record<string, unknown>;
+  /** true 表示线索已入库但 JEV 评分尚未完成（占位记录，不会落库）。 */
+  pending?: boolean;
+  pendingReason?: "price-reference-changed";
 }
 
 export interface KnowledgeEntry {
@@ -95,6 +109,7 @@ export interface KnowledgeEntry {
   entryType: "identification" | "seller-signal" | "pricing" | "question" | "case";
   category: Category;
   brand?: string;
+  model?: string;
   title: string;
   summary: string;
   confidence: "draft" | "reviewed" | "verified";
@@ -103,6 +118,9 @@ export interface KnowledgeEntry {
   updatedAt: string;
   usageCount: number;
   active?: boolean;
+  effectChannel?: "jev-context" | "manual-only";
+  reviewStatus?: "pending" | "approved";
+  sourceType?: "manual" | "ai-assisted" | "feedback-event";
 }
 
 export interface MonitorTask {

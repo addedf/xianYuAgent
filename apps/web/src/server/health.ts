@@ -94,12 +94,12 @@ async function checkRedis(redisUrl: string): Promise<ServiceHealth> {
   }
 }
 
-async function checkTypesafe(env: ServerEnv): Promise<ServiceHealth> {
+export async function checkTypesafe(env: ServerEnv = getServerEnv()): Promise<ServiceHealth> {
   if (env.TYPESAFE_ENABLED !== "true") {
-    return { name: "typesafe", state: "not-configured", detail: "JEV 评估总开关已关闭。" };
+    return { name: "typesafe", state: "not-configured", detail: "JEV 评估总开关已关闭；评分暂停，新线索保持待评分状态，恢复后自动补评。" };
   }
   if (!env.TYPESAFE_API_KEY) {
-    return { name: "typesafe", state: "unavailable", detail: "JEV 已启用但未配置 TYPESAFE_API_KEY。" };
+    return { name: "typesafe", state: "unavailable", detail: "JEV 已启用但未配置 TYPESAFE_API_KEY；评分暂停，新线索保持待评分状态。" };
   }
   if (!env.DATABASE_URL) {
     return { name: "typesafe", state: "unavailable", detail: "JEV 已配置，但没有数据库可读取 jev-evaluation 总开关。" };
@@ -108,10 +108,10 @@ async function checkTypesafe(env: ServerEnv): Promise<ServiceHealth> {
     const { db } = getDatabase();
     const [control] = await db.select({ enabled: systemControls.enabled }).from(systemControls).where(eq(systemControls.controlKey, "jev-evaluation")).limit(1);
     return control?.enabled
-      ? { name: "typesafe", state: "ready", detail: "JEV 已启用；Key 仅在服务端环境变量中读取。" }
-      : { name: "typesafe", state: "not-configured", detail: "JEV 环境已配置，但数据库总开关仍关闭。" };
+      ? { name: "typesafe", state: "ready", detail: "JEV 已启用，评分正常；Key 仅在服务端环境变量中读取。" }
+      : { name: "typesafe", state: "not-configured", detail: "JEV 环境已配置，但数据库总开关仍关闭；评分暂停，恢复后自动补评。" };
   } catch {
-    return { name: "typesafe", state: "unavailable", detail: "无法读取 JEV 数据库总开关。" };
+    return { name: "typesafe", state: "unavailable", detail: "无法读取 JEV 数据库总开关；评分暂停，新线索保持待评分状态。" };
   }
 }
 

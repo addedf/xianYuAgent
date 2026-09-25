@@ -1,6 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 import { getServerEnv, type ServerEnv } from "@/src/server/env";
-import { importXianyuSearch, normalizeXianyuProduct, validateLocalCollectorUrl } from "./xianyu-spider";
+import {
+  accountAgeDaysFromRegistration,
+  importXianyuSearch,
+  inferListingCategory,
+  legacySellerExternalId,
+  normalizeXianyuProduct,
+  parseDetailSnapshot,
+  parseSellerProfileSnapshot,
+  validateLocalCollectorUrl,
+  xianyuScanScope,
+} from "./xianyu-spider";
 
 const env: ServerEnv = {
   ...getServerEnv({ NODE_ENV: "test" }),
@@ -36,9 +46,18 @@ describe("validateLocalCollectorUrl", () => {
   });
 });
 
+describe("xianyuScanScope", () => {
+  it("distinguishes the same keyword searched in different places", () => {
+    const base = { keyword: "劳力士", maxPages: 1, province: "广东", city: "广州" };
+    expect(xianyuScanScope(base)).toBe(xianyuScanScope({ ...base }));
+    expect(xianyuScanScope(base)).not.toBe(xianyuScanScope({ ...base, city: "佛山" }));
+    expect(xianyuScanScope(base)).not.toBe(xianyuScanScope({ ...base, keyword: "欧米茄" }));
+  });
+});
+
 describe("normalizeXianyuProduct", () => {
   it("maps the collector row into a conservative internal listing", () => {
-    const listing = normalizeXianyuProduct(sourceProduct, { keyword: "劳力士", category: "watch", maxPages: 1 });
+    const listing = normalizeXianyuProduct(sourceProduct, { keyword: "劳力士", maxPages: 1 });
 
     expect(listing).toMatchObject({
       externalId: "778899",
@@ -53,7 +72,7 @@ describe("normalizeXianyuProduct", () => {
 
   it("skips rows with unusable prices", () => {
     expect(
-      normalizeXianyuProduct({ ...sourceProduct, price: "价格异常" }, { keyword: "劳力士", category: "watch", maxPages: 1 }),
+      normalizeXianyuProduct({ ...sourceProduct, price: "价格异常" }, { keyword: "劳力士", maxPages: 1 }),
     ).toBeNull();
   });
 
@@ -61,13 +80,124 @@ describe("normalizeXianyuProduct", () => {
     const listing = normalizeXianyuProduct({
       ...sourceProduct,
       image_urls: JSON.stringify(["https://img.example.com/front.jpg", "https://img.example.com/back.jpg"]),
-    }, { keyword: "劳力士", category: "watch", maxPages: 1 });
+    }, { keyword: "劳力士", maxPages: 1 });
 
     expect(listing?.imageUrls).toEqual([
       "https://img.example.com/item.jpg",
       "https://img.example.com/front.jpg",
       "https://img.example.com/back.jpg",
     ]);
+  });
+
+  it("classifies from product content without requiring a category filter", () => {
+    expect(inferListingCategory("卡地亚蓝气球腕表", "", "卡地亚")).toBe("watch");
+    expect(inferListingCategory("LV 发财桶", "", "LV")).toBe("bag");
+    expect(inferListingCategory("卡地亚 Love 戒指", "", "卡地亚")).toBe("jewelry");
+    expect(inferListingCategory("个人闲置精品", "", "精品")).toBe("other");
+  });
+
+  it("recognizes Longines from the listing title without a detail snapshot", () => {
+    const listing = normalizeXianyuProduct({ ...sourceProduct, title: "浪琴康卡斯 L3.781.4.56.6 自动机械男士腕表" }, { keyword: "腕表", maxPages: 1 });
+    expect(listing).toMatchObject({ category: "watch", brand: "浪琴" });
+  });
+});
+
+describe("detail and profile snapshots", () => {
+  const detailJson = JSON.stringify({
+    data: {
+      itemDO: {
+        desc: "24年带票98新原始出，附件肩带小票齐全，芯片可验",
+        attributeList: [
+          { name: "品牌", value: "Louis Vuitton/路易威登" },
+          { name: "系列", value: "nano cannes 发财桶" },
+          { name: "成色", value: "几乎全新" },
+        ],
+        soldCount: 2,
+        wantCount: 15,
+        viewCount: 130,
+        userId: "2208691234567",
+      },
+      sellerDO: {
+        hasSoldNumInteger: 1043,
+      },
+    },
+  });
+  const profileJson = JSON.stringify({
+    nickName: "何富贵在奋斗ing",
+    soldCount: 1043,
+    onSaleCount: 462,
+    creditLevel: "L6",
+    registrationRaw: "2016-05-01",
+    sampledCount: 30,
+    categoryCounts: { 箱包: 28, 腕表: 2 },
+  });
+
+  it("derives facts, brand/model and stable seller identity from the detail snapshot", () => {
+    const listing = normalizeXianyuProduct({
+      ...sourceProduct,
+      title: "24年带票98新原始出 LV路易威登 nano cannes 发财桶",
+      detail_json: detailJson,
+      seller_user_id: "2208691234567",
+      seller_profile_json: profileJson,
+    }, { keyword: "箱包", maxPages: 1 });
+
+    expect(listing).toMatchObject({
+      brand: "Louis Vuitton",
+      model: "nano cannes 发财桶",
+      description: "24年带票98新原始出，附件肩带小票齐全，芯片可验",
+      hasSerialDetail: true,
+      hasPurchaseProof: true,
+      hasAccessoryDescription: true,
+    });
+    expect(listing?.seller).toMatchObject({
+      externalId: "xianyu-user-2208691234567",
+      identityScope: "stable-platform-id",
+      completedSaleCount: 1043,
+      completedSaleCountVerified: true,
+      onSaleCount: 462,
+      creditLevel: "L6",
+      profileCategoryMix: { 箱包: 28, 腕表: 2 },
+    });
+    expect(listing?.seller.accountAgeDays).toBeGreaterThan(3000);
+  });
+
+  it("falls back to the legacy nickname key when the collector has no seller id", () => {
+    const listing = normalizeXianyuProduct(sourceProduct, { keyword: "劳力士", maxPages: 1 });
+    expect(listing?.seller.externalId).toBe(legacySellerExternalId("林小姐", "广州"));
+    expect(listing?.seller.identityScope).toBe("nickname-region");
+    expect(legacySellerExternalId("林小姐", "广州")).toMatch(/^nickname-[0-9a-f]{20}$/);
+  });
+
+  it("uses the detail seller card sold count when no profile snapshot exists", () => {
+    const listing = normalizeXianyuProduct({
+      ...sourceProduct,
+      detail_json: detailJson,
+      seller_user_id: "2208691234567",
+    }, { keyword: "箱包", maxPages: 1 });
+    expect(listing?.seller).toMatchObject({
+      completedSaleCount: 1043,
+      completedSaleCountVerified: true,
+      identityScope: "stable-platform-id",
+    });
+    expect(listing?.seller.onSaleCount).toBeUndefined();
+  });
+
+  it("tolerates malformed or empty snapshots", () => {
+    expect(parseDetailSnapshot(null)).toBeNull();
+    expect(parseDetailSnapshot("not-json")).toBeNull();
+    expect(parseDetailSnapshot(JSON.stringify({ data: {} }))).toBeNull();
+    expect(parseSellerProfileSnapshot(undefined)).toBeNull();
+    expect(parseSellerProfileSnapshot("[]")).toBeNull();
+    const partial = parseDetailSnapshot(JSON.stringify({ data: { itemDO: { desc: "只有描述" } } }));
+    expect(partial).toEqual({ description: "只有描述", attributes: [] });
+  });
+
+  it("parses registration age from dates, epochs and year strings", () => {
+    const now = new Date("2026-09-24T00:00:00Z");
+    expect(accountAgeDaysFromRegistration("10年", now)).toBe(3650);
+    expect(accountAgeDaysFromRegistration("2016-05-01", now)).toBeGreaterThan(3000);
+    expect(accountAgeDaysFromRegistration("1462060800000", now)).toBeGreaterThan(3000);
+    expect(accountAgeDaysFromRegistration("not-a-date", now)).toBeUndefined();
   });
 });
 
@@ -86,15 +216,18 @@ describe("importXianyuSearch", () => {
           new_records: 1,
           new_record_ids: [12],
           record_ids: [12],
+          enriched_details: 0,
+          blocked_details: 1,
+          seller_profiles: { fetched: 0, skipped: 0, failed: 1, cooldown: 0 },
         }),
         { status: 200 },
       ));
     const loadProducts = vi.fn().mockResolvedValue([sourceProduct]);
-    const persistListings = vi.fn().mockResolvedValue(1);
+    const persistListings = vi.fn().mockResolvedValue({ imported: 1, filtered: 0, pendingEvaluation: 0 });
 
     await expect(
       importXianyuSearch(
-        { keyword: "劳力士", category: "watch", maxPages: 1, city: "广州" },
+        { keyword: "劳力士", maxPages: 1, province: "广东", city: "广州" },
         { env, fetcher, loadProducts, persistListings },
       ),
     ).resolves.toEqual({
@@ -103,7 +236,12 @@ describe("importXianyuSearch", () => {
       totalResults: 30,
       newRecords: 1,
       importedRecords: 1,
+      filteredRecords: 0,
+      pendingEvaluation: 0,
       skippedRecords: 0,
+      enrichedDetails: 0,
+      blockedDetails: 1,
+      sellerProfiles: { fetched: 0, skipped: 0, failed: 1, cooldown: 0 },
       items: [
         {
           externalId: "778899",
@@ -119,7 +257,10 @@ describe("importXianyuSearch", () => {
 
     expect(loadProducts).toHaveBeenCalledWith([12], env.XIANYU_COLLECTOR_DATABASE_URL);
     expect(persistListings).toHaveBeenCalledOnce();
+    expect(persistListings).toHaveBeenCalledWith(expect.any(Array), [sourceProduct], xianyuScanScope({ keyword: "劳力士", maxPages: 1, province: "广东", city: "广州" }));
     expect((fetcher.mock.calls[1]?.[1]?.headers as Headers).get("x-xianyu-service-token")).toBe("collector-token");
+    expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).toMatchObject({ keyword: "劳力士", province: "广东", city: "广州", max_pages: 1 });
+    expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).not.toHaveProperty("category");
   });
 
   it("does not search or persist when the xianyu session is logged out", async () => {
@@ -128,7 +269,7 @@ describe("importXianyuSearch", () => {
 
     await expect(
       importXianyuSearch(
-        { keyword: "劳力士", category: "watch", maxPages: 1 },
+        { keyword: "劳力士", maxPages: 1 },
         { env, fetcher, persistListings },
       ),
     ).rejects.toThrow("先在连接与控制页面完成闲鱼账号登录");

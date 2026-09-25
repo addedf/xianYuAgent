@@ -37,8 +37,11 @@ export function parseTypesafeResponse(payload: unknown, state: TypesafeState): J
   }
   const normalized = (key: keyof typeof scoreRubrics): JevScore => {
     const answer = answers[key];
+    // 归一化用五档概率分布的期望值得到连续分数，比单点档位更平滑；
+    // 模型给出的整数档位仍保留在 raw 中供审计。
+    const expectedIndex = Object.entries(answer.probabilities).reduce((sum, [index, p]) => sum + Number(index) * p, 0);
     const best = Object.entries(answer.probabilities).sort((a, b) => b[1] - a[1])[0][0];
-    return { score: Math.round(answer.score / 4 * 100), confidence: answer.confidence, probabilities: answer.probabilities, signal: scoreRubrics[key][Number(best)] };
+    return { score: Math.round((expectedIndex / 4) * 100), confidence: answer.confidence, probabilities: answer.probabilities, signal: scoreRubrics[key][Number(best)] };
   };
   return {
     modelVersion: `${parsed.data.model}/sdk-0.6.0/q-${QUESTIONS_VERSION}`,

@@ -21,6 +21,7 @@
     "@next/env": "^16.3.3",
     "@phosphor-icons/react": "^2.1.10",
     "@typesafe-ai/sdk": "0.6.0",
+    "@vant/area-data": "2.0.0",
     "bullmq": "^6.3.2",
     "drizzle-orm": "^0.45.2",
     "ioredis": "^6.0.0",
