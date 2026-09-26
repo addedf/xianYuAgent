@@ -350,3 +350,30 @@ export const xianyuListingHandling = pgTable(
   },
   (table) => [uniqueIndex("xianyu_handling_external_unique").on(table.platform, table.externalId)],
 );
+
+/** 探查运行记录：进度、预算与覆盖边界（方案 7/8），由 Web 单方写入。 */
+export const xianyuScanRuns = pgTable(
+  "xianyu_scan_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    platform: text("platform").notNull().default("xianyu"),
+    /** 任务范围哈希：关键词+地区+价格（fresh 另含时间窗）；页数是预算不是范围。 */
+    scopeHash: text("scope_hash").notNull(),
+    scopeDetail: jsonb("scope_detail").notNull().default({}),
+    /** fresh 追踪最新 / expand 扩大覆盖。 */
+    mode: text("mode").notNull().default("fresh"),
+    /** running / completed / partial（有失败页）/ failed。 */
+    status: text("status").notNull().default("running"),
+    startPage: integer("start_page").notNull().default(1),
+    requestedPages: integer("requested_pages").notNull().default(1),
+    completedPages: integer("completed_pages").notNull().default(0),
+    failedPages: jsonb("failed_pages").notNull().default([]),
+    stopReason: text("stop_reason"),
+    coverageNote: text("coverage_note"),
+    resultCounts: jsonb("result_counts").notNull().default({}),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    ...auditColumns,
+  },
+  (table) => [index("xianyu_scan_runs_scope_idx").on(table.platform, table.scopeHash, table.startedAt)],
+);
