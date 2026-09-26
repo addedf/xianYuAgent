@@ -8,6 +8,7 @@ import { finalizeAssessment, filteredAssessment, RULESET_VERSION } from "@/src/d
 import { runPreFilters, type PreFilterConfigs, type PreFilterHit } from "@/src/domain/pre-filters";
 import { knowledgeHash, knowledgeUsed, selectKnowledge } from "@/src/domain/knowledge-context";
 import { priceReferenceSnapshot } from "@/src/domain/price-reference";
+import { sellerIdentityCandidates, weakIdentityKey } from "@/src/domain/seller-identity";
 import type { SellerRuleThresholds } from "@/src/domain/seller-rules";
 import { getDatabase } from "@/src/server/db/client";
 import { getServerEnv } from "@/src/server/env";
@@ -16,6 +17,7 @@ import { QUESTIONS_VERSION } from "@/src/server/evaluators/typesafe/questions";
 import { loadSellerRuleSettings } from "@/src/server/seller-rule-settings";
 import { loadPreFilterSettings } from "@/src/server/pre-filter-settings";
 import { loadActiveKnowledgeEntries } from "@/src/server/knowledge-injection";
+import { loadActiveExclusionMap, loadHandlingMap, matchExclusion } from "@/src/server/exclusions";
 import { assessments, marketplaceListings, sellers } from "@/src/server/db/schema";
 import { legacySellerExternalId, parseDetailSnapshot, parseSellerProfileSnapshot, parseSourceProduct, type SourceProduct, type SellerProfileSnapshot, xianyuProductExternalId } from "./xianyu-spider";
 
@@ -187,11 +189,18 @@ export interface SaveListingsOutcome {
   filtered: number;
   /** 本轮结束后仍没有 JEV 评分的商品数（评分不可用或尚未评分）。 */
   pendingEvaluation: number;
+  /** 命中卖家排除记录、未入库的商品数。 */
+  excludedListings?: number;
+  /** 命中商品忽略记录、未入库的商品数。 */
+  ignoredListings?: number;
 }
 
 export async function saveListings(listings: MarketplaceListing[], sourceProducts: SourceProduct[], scanScope: string): Promise<SaveListingsOutcome> {
   const { db } = getDatabase();
   const env = getServerEnv();
+  // 正式入库前核查统一排除与商品处理状态（方案 5.8）。
+  // 排除服务不可用时此处抛错、整批不写：黑名单不可知期间宁可暂停导入，也不放行商家商品。
+  const [exclusionMap, handlingMap] = await Promise.all([loadActiveExclusionMap(), loadHandlingMap()]);
   const sellerRuleSettings = await loadSellerRuleSettings();
   const preFilterSettings = await loadPreFilterSettings();
   const activePreFilterConfigs: PreFilterConfigs = { ...preFilterSettings.configs, sellerThresholds: sellerRuleSettings.enabled === false ? null : sellerRuleSettings.thresholds };
@@ -200,6 +209,8 @@ export async function saveListings(listings: MarketplaceListing[], sourceProduct
   let imported = 0;
   let filtered = 0;
   let pendingEvaluation = 0;
+  let excludedListings = 0;
+  let ignoredListings = 0;
   const seenExternalIds = new Set(listings.map((listing) => listing.externalId));
   const workItems: Array<{
     id: string;
@@ -211,6 +222,23 @@ export async function saveListings(listings: MarketplaceListing[], sourceProduct
   }> = [];
 
   for (const listing of listings) {
+    // 商品忽略记录：旧商品不再进入待处理；卖家其他新货仍正常筛选（方案 3.1）。
+    if (handlingMap.has(listing.externalId)) {
+      ignoredListings += 1;
+      continue;
+    }
+    // 卖家排除记录：按弱身份与稳定身份键分别匹配，命中即不入库（方案 5.3）。
+    const exclusionHit = matchExclusion(sellerIdentityCandidates({
+      displayName: listing.seller.displayName,
+      region: listing.seller.region,
+      stableId: listing.seller.identityScope === "stable-platform-id"
+        ? listing.seller.externalId.slice("xianyu-user-".length)
+        : undefined,
+    }), exclusionMap);
+    if (exclusionHit) {
+      excludedListings += 1;
+      continue;
+    }
     const sourceProduct = sourceProducts.find((product) => xianyuProductExternalId(product.link, product.id) === listing.externalId);
     const profile = parseSellerProfileSnapshot(sourceProduct?.seller_profile_json);
     // 卖家身份升级：拿到稳定平台 ID 时，把旧“昵称+地区”行原位改名，历史线索关联保持不变。
@@ -242,7 +270,23 @@ export async function saveListings(listings: MarketplaceListing[], sourceProduct
     }
     const [seller] = attachedSellerId
       ? [{ id: attachedSellerId }]
-      : await db.insert(sellers).values({ platform: "xianyu", externalId: listing.seller.externalId, displayName: listing.seller.displayName, region: listing.seller.region, profileSnapshot: { source: "xianyu-spider", completeness: profile ? "complete-profile" : "nickname-only" } }).onConflictDoUpdate({ target: [sellers.platform, sellers.externalId], set: { displayName: listing.seller.displayName, region: listing.seller.region, lastSeenAt: new Date(), updatedAt: new Date() } }).returning({ id: sellers.id });
+      : await db.insert(sellers).values({
+        platform: "xianyu",
+        externalId: listing.seller.externalId,
+        identityKey: weakIdentityKey(listing.seller.displayName, listing.seller.region),
+        displayName: listing.seller.displayName,
+        region: listing.seller.region,
+        profileSnapshot: { source: "xianyu-spider", completeness: profile ? "complete-profile" : "nickname-only" },
+      }).onConflictDoUpdate({
+        target: [sellers.platform, sellers.externalId],
+        set: {
+          displayName: listing.seller.displayName,
+          region: listing.seller.region,
+          identityKey: weakIdentityKey(listing.seller.displayName, listing.seller.region),
+          lastSeenAt: new Date(),
+          updatedAt: new Date(),
+        },
+      }).returning({ id: sellers.id });
     const detail = parseDetailSnapshot(sourceProduct?.detail_json);
     const [existing] = await db.select({ id: marketplaceListings.id, contentFingerprint: marketplaceListings.contentFingerprint, rawPayload: marketplaceListings.rawPayload }).from(marketplaceListings).where(and(eq(marketplaceListings.platform, "xianyu"), eq(marketplaceListings.externalId, listing.externalId))).limit(1);
     const previousPayload = existing?.rawPayload && typeof existing.rawPayload === "object" && !Array.isArray(existing.rawPayload)
@@ -446,5 +490,5 @@ export async function saveListings(listings: MarketplaceListing[], sourceProduct
       await db.update(marketplaceListings).set({ absentScanCount, status: absentScanCount >= 3 ? "possibly_sold" : "active", updatedAt: new Date() }).where(eq(marketplaceListings.id, row.id));
     }
   }
-  return { imported, filtered, pendingEvaluation };
+  return { imported, filtered, pendingEvaluation, excludedListings, ignoredListings };
 }

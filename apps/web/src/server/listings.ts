@@ -2,11 +2,13 @@ import { desc, eq, inArray } from "drizzle-orm";
 import type { AssessmentEvidence, AssessmentScores, Category, ListingAssessment, MarketplaceListing, RecommendedAction, RiskLevel } from "@/src/domain/listing";
 import { suggestedQuestionsFromMissing } from "@/src/domain/facts";
 import { selectKnowledge } from "@/src/domain/knowledge-context";
+import { sellerIdentityCandidates } from "@/src/domain/seller-identity";
 import { pendingAssessment } from "@/src/domain/finalize";
 import { getDatabase } from "@/src/server/db/client";
 import { assessments, marketplaceListings, sellers } from "@/src/server/db/schema";
 import { getServerEnv } from "@/src/server/env";
 import { loadActiveKnowledgeEntries } from "@/src/server/knowledge-injection";
+import { loadActiveExclusionMap, loadHandlingMap, loadObservationEvidence, matchExclusion } from "@/src/server/exclusions";
 
 const categories = new Set<Category>(["watch", "bag", "jewelry", "other"]);
 const riskLevels = new Set<RiskLevel>(["low", "insufficient", "medium", "high"]);
@@ -71,7 +73,7 @@ function assessmentFromRow(row: typeof assessments.$inferSelect, confidenceThres
 
 export async function loadLatestAssessedListings(limit = 80, listingId?: string, includeUnassessed = false) {
   const { db } = getDatabase();
-  const rows = await db.select({ listing: marketplaceListings, sellerExternalId: sellers.externalId, sellerDisplayName: sellers.displayName, sellerRegion: sellers.region, sellerProfileSnapshot: sellers.profileSnapshot }).from(marketplaceListings).leftJoin(sellers, eq(marketplaceListings.sellerId, sellers.id)).where(listingId ? eq(marketplaceListings.id, listingId) : undefined).orderBy(desc(marketplaceListings.firstSeenAt)).limit(Math.min(Math.max(limit, 1), 200));
+  const rows = await db.select({ listing: marketplaceListings, sellerRecordId: sellers.id, sellerExternalId: sellers.externalId, sellerDisplayName: sellers.displayName, sellerRegion: sellers.region, sellerProfileSnapshot: sellers.profileSnapshot }).from(marketplaceListings).leftJoin(sellers, eq(marketplaceListings.sellerId, sellers.id)).where(listingId ? eq(marketplaceListings.id, listingId) : undefined).orderBy(desc(marketplaceListings.firstSeenAt)).limit(Math.min(Math.max(limit, 1), 200));
   if (rows.length === 0) return [];
   const sellerIds = [...new Set(rows.map((row) => row.listing.sellerId).filter((id): id is string => id !== null))];
   const observedSellerListings = sellerIds.length > 0
@@ -93,6 +95,12 @@ export async function loadLatestAssessedListings(limit = 80, listingId?: string,
   const assessmentRows = await db.select({ assessment: assessments }).from(assessments).where(inArray(assessments.listingId, listingIds)).orderBy(desc(assessments.evaluatedAt));
   const latest = new Map<string, typeof assessments.$inferSelect>();
   for (const row of assessmentRows) if (!latest.has(row.assessment.listingId)) latest.set(row.assessment.listingId, row.assessment);
+
+  // 统一排除/商品处理/观察证据在读取层实时核对：人工拉黑与忽略立即对工作台生效，
+  // 重扫或重评都不会把排除结果重新变回待处理线索（方案 6、8）。
+  const exclusionMap = await loadActiveExclusionMap();
+  const handlingMap = await loadHandlingMap();
+  const observationEvidence = await loadObservationEvidence([...new Set(rows.map((row) => `${(row.sellerDisplayName ?? "").trim()}|${(row.sellerRegion ?? "").trim()}`))]);
 
   const assessed = rows.flatMap((row) => {
     const assessmentRow = latest.get(row.listing.id);
@@ -116,6 +124,13 @@ export async function loadLatestAssessedListings(limit = 80, listingId?: string,
       : freshSignals || sellerSignalSnapshot.activeListingCount !== undefined || profileSnapshot.completeness === "observed-listings"
         ? "observed-listings" as const
         : "nickname-only" as const;
+    const sellerExclusionHit = matchExclusion(sellerIdentityCandidates({
+      displayName: row.sellerDisplayName || (typeof rawPayload.sellerName === "string" ? rawPayload.sellerName : ""),
+      region: row.sellerRegion || row.listing.region || "",
+      stableId: row.sellerExternalId?.startsWith("xianyu-user-") ? row.sellerExternalId.slice("xianyu-user-".length) : undefined,
+    }), exclusionMap);
+    const sellerWeakKey = `${(row.sellerDisplayName ?? "").trim()}|${(row.sellerRegion ?? "").trim()}`;
+    const observedEvidence = observationEvidence.get(sellerWeakKey);
     const listing: MarketplaceListing = {
       id: row.listing.id,
       externalId: row.listing.externalId,
@@ -141,7 +156,19 @@ export async function loadLatestAssessedListings(limit = 80, listingId?: string,
       status: row.listing.status === "possibly_sold" ? "possibly_sold" : "active",
       lastSeenAt: row.listing.lastSeenAt.toISOString(),
       absentScanCount: row.listing.absentScanCount,
+      ...(sellerExclusionHit ? {
+        sellerExcluded: {
+          exclusionId: sellerExclusionHit.id,
+          identityKey: sellerExclusionHit.identityKey,
+          identityType: sellerExclusionHit.identityType,
+          source: sellerExclusionHit.source,
+          reason: sellerExclusionHit.reason,
+        },
+      } : {}),
+      ...(handlingMap.has(row.listing.externalId) ? { handling: handlingMap.get(row.listing.externalId) } : {}),
+      ...(observedEvidence ? { sellerObservedItemCount: observedEvidence.distinctItemCount } : {}),
       seller: {
+        sellerRecordId: row.sellerRecordId ?? undefined,
         externalId: row.sellerExternalId || `unknown-${row.listing.externalId}`,
         displayName: row.sellerDisplayName || (typeof rawPayload.sellerName === "string" ? rawPayload.sellerName : "匿名卖家"),
         region: row.sellerRegion || row.listing.region || "地区未知",

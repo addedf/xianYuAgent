@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import {
   ArrowSquareOut,
@@ -11,17 +12,19 @@ import {
   ImageSquare,
   Info,
   MagnifyingGlass,
+  Prohibit,
   SealWarning,
   UserCircleCheck,
   X,
 } from "@phosphor-icons/react";
 import { RiskChip } from "@/components/status-chip";
 import type { ListingAssessment, MarketplaceListing, RecommendedAction } from "@/src/domain/listing";
+import { exclusionReasonLabel, identityTypeLabel } from "@/src/domain/seller-identity";
 import { nonPersonalSellerReason } from "@/src/domain/seller";
 import { DEFAULT_SELLER_RULE_THRESHOLDS, type SellerRuleThresholds } from "@/src/domain/seller-rules";
 
 type AssessedListing = { listing: MarketplaceListing; assessment: ListingAssessment };
-type Filter = "all" | RecommendedAction | "pending" | "filtered";
+type Filter = "all" | RecommendedAction | "pending" | "filtered" | "excluded" | "ignored";
 
 const currency = new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY", maximumFractionDigits: 0 });
 const categoryLabels = { watch: "腕表", bag: "箱包", jewelry: "饰品", other: "其他" };
@@ -36,6 +39,8 @@ const filterLabels: Record<Filter, string> = {
   ...actionLabels,
   pending: "待评分",
   filtered: "已过滤",
+  excluded: "卖家已排除",
+  ignored: "已忽略",
 };
 const evidenceSourceLabels: Record<string, string> = { rule: "规则", knowledge: "知识", market: "市场", seller: "卖家", model: "模型" };
 
@@ -68,6 +73,7 @@ function ListingPhoto({ src, alt, category, variant }: { src?: string; alt: stri
 }
 
 export function LeadWorkbench({ items, demoMode = true, confidenceThreshold = 55, sellerThresholds = DEFAULT_SELLER_RULE_THRESHOLDS }: { items: AssessedListing[]; demoMode?: boolean; confidenceThreshold?: number; sellerThresholds?: SellerRuleThresholds }) {
+  const router = useRouter();
   const [filter, setFilter] = useState<Filter>("all");
   const [selectedId, setSelectedId] = useState(items[0]?.listing.id ?? "");
   const [photoIndex, setPhotoIndex] = useState(0);
@@ -78,14 +84,22 @@ export function LeadWorkbench({ items, demoMode = true, confidenceThreshold = 55
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [feedbackNotice, setFeedbackNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [knowledgeCandidate, setKnowledgeCandidate] = useState(false);
+  const [blacklistOpen, setBlacklistOpen] = useState(false);
+  const [blacklistReason, setBlacklistReason] = useState<"manual-suspicion" | "merchant-name">("manual-suspicion");
+  const [blacklistNote, setBlacklistNote] = useState("");
+  const [blacklistBusy, setBlacklistBusy] = useState(false);
+  const [actionNotice, setActionNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
 
-  // 「已过滤」线索默认隐藏：仅在「已过滤」标签下可见；默认「全部」只展示未被拦截的线索（含待评分）。
+  // 人工处理状态（已忽略/卖家已排除）独立于采集刷新与模型结果：
+  // 默认「全部」不再展示，只有对应标签下可见；重扫或重评不会重置（方案 8）。
   const filtered = useMemo(
-    () => items.filter(({ assessment }) => {
+    () => items.filter(({ listing, assessment }) => {
       if (filter === "filtered") return Boolean(assessment.filterCode);
       if (filter === "pending") return !assessment.filterCode && assessment.pending === true;
-      if (filter === "all") return !assessment.filterCode;
-      return !assessment.filterCode && assessment.recommendedAction === filter;
+      if (filter === "excluded") return Boolean(listing.sellerExcluded);
+      if (filter === "ignored") return listing.handling === "ignored";
+      if (filter === "all") return !assessment.filterCode && !listing.sellerExcluded && listing.handling !== "ignored";
+      return !assessment.filterCode && !listing.sellerExcluded && listing.handling !== "ignored" && assessment.recommendedAction === filter;
     }),
     [filter, items],
   );
@@ -173,6 +187,62 @@ export function LeadWorkbench({ items, demoMode = true, confidenceThreshold = 55
     setFeedbackLabel("");
     setFeedbackNotice(null);
     setKnowledgeCandidate(false);
+    setBlacklistOpen(false);
+    setBlacklistNote("");
+    setActionNotice(null);
+  }
+
+  async function submitBlacklist() {
+    const sellerRecordId = listing.seller.sellerRecordId;
+    if (!sellerRecordId || blacklistBusy) return;
+    setBlacklistBusy(true);
+    setActionNotice(null);
+    try {
+      const response = await fetch("/api/sellers/blacklist", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sellerId: sellerRecordId, reason: blacklistReason, note: blacklistNote.trim() || undefined }),
+      });
+      const result = await response.json().catch(() => ({})) as { error?: string; affectedActiveListings?: number; scopeNotice?: string };
+      if (!response.ok) throw new Error(result.error ?? "拉黑保存失败，请重试。");
+      setActionNotice({
+        kind: "success",
+        text: `已拉黑卖家 ${listing.seller.displayName}；存量 ${result.affectedActiveListings ?? 0} 条线索已移出待处理。${result.scopeNotice ?? ""}`,
+      });
+      setBlacklistOpen(false);
+      setBlacklistNote("");
+      router.refresh();
+    } catch (error) {
+      setActionNotice({ kind: "error", text: error instanceof Error ? error.message : "拉黑保存失败，请重试。" });
+    } finally {
+      setBlacklistBusy(false);
+    }
+  }
+
+  async function updateHandling(handling: "ignored" | "pending" | "none") {
+    if (blacklistBusy) return;
+    setBlacklistBusy(true);
+    setActionNotice(null);
+    try {
+      const response = await fetch("/api/listings/handling", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ listingId: listing.id, handling }),
+      });
+      const result = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "处理状态保存失败，请重试。");
+      setActionNotice({
+        kind: "success",
+        text: handling === "ignored" ? "已忽略该商品：不再进入待处理；该卖家后续新货仍会正常筛选。"
+          : handling === "pending" ? "已标记暂时待定：重扫与重评不会把它重置回未读。"
+          : "已取消人工处理状态。",
+      });
+      router.refresh();
+    } catch (error) {
+      setActionNotice({ kind: "error", text: error instanceof Error ? error.message : "处理状态保存失败，请重试。" });
+    } finally {
+      setBlacklistBusy(false);
+    }
   }
 
   return (
@@ -227,6 +297,9 @@ export function LeadWorkbench({ items, demoMode = true, confidenceThreshold = 55
                   <RiskChip level={item.assessment.riskLevel} />
                   {item.assessment.filterCode && <span className="seller-type-tag">已过滤</span>}
                   {item.assessment.pending && <span className="seller-type-tag">待模型评分</span>}
+                  {item.listing.sellerExcluded && <span className="seller-type-tag">卖家已排除</span>}
+                  {item.listing.handling === "ignored" && <span className="seller-type-tag">已忽略</span>}
+                  {item.listing.handling === "pending" && <span className="seller-type-tag">待定</span>}
                   {nonPersonalSellerReason(item.listing.seller, sellerThresholds, item.listing.category) && <span className="seller-type-tag" title={nonPersonalSellerReason(item.listing.seller, sellerThresholds, item.listing.category) ?? undefined}>疑似非个人卖家</span>}
                 </span>
               </button>
@@ -257,8 +330,67 @@ export function LeadWorkbench({ items, demoMode = true, confidenceThreshold = 55
                 <ArrowSquareOut size={17} aria-hidden="true" />
               </button>
             )}
+            {listing.handling === "ignored"
+              ? <button className="button button-secondary" type="button" onClick={() => updateHandling("none")} disabled={blacklistBusy}>取消忽略</button>
+              : <button className="button button-secondary" type="button" onClick={() => updateHandling("ignored")} disabled={blacklistBusy}>忽略商品</button>}
+            {listing.handling !== "pending" && !listing.sellerExcluded && (
+              <button className="button button-secondary" type="button" onClick={() => updateHandling("pending")} disabled={blacklistBusy}>暂时待定</button>
+            )}
+            {!listing.sellerExcluded && (
+              <button className="button button-primary" type="button" onClick={() => setBlacklistOpen((open) => !open)} disabled={!listing.seller.sellerRecordId} title={listing.seller.sellerRecordId ? "拉黑后该卖家现有线索移出待处理，未来商品全部拦截" : "该线索缺少可定位的卖家记录"}>
+                <Prohibit size={17} aria-hidden="true" />
+                拉黑卖家
+              </button>
+            )}
           </div>
         </header>
+        {blacklistOpen && (
+          <div className="blacklist-form" role="form" aria-label="拉黑卖家">
+            <div>
+              <label>
+                <span>拉黑原因</span>
+                <select value={blacklistReason} onChange={(event) => setBlacklistReason(event.target.value as "manual-suspicion" | "merchant-name")}>
+                  <option value="manual-suspicion">人工判断为商家</option>
+                  <option value="merchant-name">卖家名称疑似商家</option>
+                </select>
+              </label>
+              <label>
+                <span>补充说明（可选）</span>
+                <input value={blacklistNote} onChange={(event) => setBlacklistNote(event.target.value)} placeholder="例如：主页全是同款批发文案" maxLength={400} />
+              </label>
+            </div>
+            <p className="blacklist-scope">
+              将拉黑「{listing.seller.displayName} · {listing.region}」。当前多数卖家只有昵称+地区弱身份：同昵称同地区会一并拦截，卖家改名后需重新发现；匿名占位不能整组拉黑。操作会记录审计并可在排除管理撤销。
+            </p>
+            <div className="blacklist-form-actions">
+              <button className="button button-primary button-small" type="button" onClick={submitBlacklist} disabled={blacklistBusy}>
+                {blacklistBusy ? "处理中…" : "确认拉黑"}
+              </button>
+              <button className="button button-secondary button-small" type="button" onClick={() => setBlacklistOpen(false)} disabled={blacklistBusy}>取消</button>
+            </div>
+          </div>
+        )}
+        {actionNotice && <div className="feedback-notice" data-kind={actionNotice.kind} role="status">{actionNotice.text}</div>}
+        {listing.sellerExcluded && (
+          <div className="exclusion-banner" role="status">
+            <Prohibit size={20} weight="fill" aria-hidden="true" />
+            <div>
+              <strong>卖家已被排除（{listing.sellerExcluded.source === "manual" ? "人工拉黑" : "规则自动排除"} · {exclusionReasonLabel(listing.sellerExcluded.reason)}）</strong>
+              <p>匹配身份：{identityTypeLabel(listing.sellerExcluded.identityType)} · {listing.sellerExcluded.identityKey}。该卖家的商品不会再进入待处理；如需恢复请到排除管理撤销。</p>
+            </div>
+            <a className="button button-secondary button-small" href="/exclusions">前往排除管理</a>
+          </div>
+        )}
+        {listing.handling === "ignored" && (
+          <div className="exclusion-banner" role="status" data-kind="ignored">
+            <Prohibit size={20} weight="fill" aria-hidden="true" />
+            <div>
+              <strong>该商品已被忽略</strong>
+              <p>不再进入待处理队列；同一卖家的新商品不受影响。</p>
+            </div>
+          </div>
+        )}
+
         <div className="lead-facts">
           <div><span>挂牌价</span><strong>{currency.format(listing.price)}</strong></div>
           <div><span>市场参考价</span><strong>{listing.marketReferencePrice ? currency.format(listing.marketReferencePrice) : "暂无合格参考价"}</strong>{listing.marketReferenceVersion && <small>人工复核 v{listing.marketReferenceVersion} · <a href={listing.marketReferenceId ? `/knowledge#price-reference-${listing.marketReferenceId}` : "/knowledge"}>查看来源</a></small>}</div>
@@ -266,6 +398,9 @@ export function LeadWorkbench({ items, demoMode = true, confidenceThreshold = 55
           <div>
             <span>卖家</span>
             <strong>{listing.seller.displayName} · 已采集在架 {listing.seller.activeListingCount} 条</strong>
+            {listing.sellerObservedItemCount !== undefined && (
+              <small className="seller-observed-types">搜索列表跨轮累计发现 {listing.sellerObservedItemCount} 件不同商品（观察口径，非平台在售总数）。</small>
+            )}
             {listing.seller.signalScope === "complete-profile" ? (
               <small className="seller-observed-types">
                 主页统计：已卖出 {listing.seller.completedSaleCount ?? "未知"} 件 · 在售 {listing.seller.onSaleCount ?? "未知"} 件{listing.seller.creditLevel ? ` · 信用 ${listing.seller.creditLevel}` : ""}{listing.seller.accountAgeDays !== undefined ? ` · 来闲鱼约 ${Math.max(1, Math.floor(listing.seller.accountAgeDays / 365))} 年` : ""}

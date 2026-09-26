@@ -8,6 +8,8 @@ export type ListingStatus = "active" | "possibly_sold";
 
 export interface SellerProfile {
   externalId: string;
+  /** sellers 表主键，人工拉黑等操作以它定位卖家行。 */
+  sellerRecordId?: string;
   displayName: string;
   region: string;
   activeListingCount: number;
@@ -56,6 +58,18 @@ export interface MarketplaceListing {
   status?: ListingStatus;
   lastSeenAt?: string;
   absentScanCount?: number;
+  /** 命中的卖家排除记录（读取层实时核对统一排除服务）。 */
+  sellerExcluded?: {
+    exclusionId: string;
+    identityKey: string;
+    identityType: string;
+    source: "manual" | "auto-rule";
+    reason: string;
+  };
+  /** 人工处理状态（忽略/待定/关注），独立于采集刷新与模型结果。 */
+  handling?: "ignored" | "pending" | "watched";
+  /** 该卖家在观察索引中的跨轮不同商品累计（弱身份口径）。 */
+  sellerObservedItemCount?: number;
 }
 
 export interface AssessmentEvidence {

@@ -27,6 +27,10 @@ export async function POST(request: Request) {
   try {
     const [item] = await loadLatestAssessedListings(1, payload.data.listingId, true);
     if (!item) return Response.json({ error: "没有找到这条入库商品。" }, { status: 404 });
+    // 排除防复活：卖家已被排除的线索不重新评分、不重新激活（方案 6）。
+    if (item.listing.sellerExcluded) {
+      return Response.json({ error: "该线索的卖家已被排除，重新评分不会恢复展示；如需恢复请先在排除管理中撤销。" }, { status: 409 });
+    }
 
     const sellerRuleSettings = await loadSellerRuleSettings();
     const preFilterSettings = await loadPreFilterSettings();

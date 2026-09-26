@@ -7,12 +7,14 @@ import {
   CaretRight,
   Gauge,
   ListMagnifyingGlass,
+  Prohibit,
   SlidersHorizontal,
 } from "@phosphor-icons/react";
 
 const navItems = [
   { href: "/", label: "今日概览", icon: Gauge },
   { href: "/leads", label: "线索审阅", icon: ListMagnifyingGlass },
+  { href: "/exclusions", label: "排除管理", icon: Prohibit },
   { href: "/knowledge", label: "经验知识库", icon: Books },
   { href: "/settings", label: "连接与控制", icon: SlidersHorizontal },
 ];

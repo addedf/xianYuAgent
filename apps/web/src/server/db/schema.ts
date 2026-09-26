@@ -22,6 +22,8 @@ export const sellers = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     platform: text("platform").notNull(),
     externalId: text("external_id").notNull(),
+    /** 跨改名的弱身份键「昵称|地区」；排除服务与观察索引按它对齐采集器。 */
+    identityKey: text("identity_key"),
     displayName: text("display_name"),
     region: text("region"),
     profileSnapshot: jsonb("profile_snapshot").notNull().default({}),
@@ -29,7 +31,7 @@ export const sellers = pgTable(
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
     ...auditColumns,
   },
-  (table) => [uniqueIndex("sellers_platform_external_unique").on(table.platform, table.externalId)],
+  (table) => [uniqueIndex("sellers_platform_external_unique").on(table.platform, table.externalId), index("sellers_identity_key_idx").on(table.identityKey)],
 );
 
 export const monitorTasks = pgTable("monitor_tasks", {
@@ -277,3 +279,74 @@ export const systemControls = pgTable("system_controls", {
   changedBy: text("changed_by").notNull().default("local-user"),
   changedAt: timestamp("changed_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// 以下三张表与采集器（Tortoise ORM）共用同一 PostgreSQL；列类型保持两边一致，
+// 证据与审计事件存 JSON 字符串（text），避免两边 ORM 对 jsonb 默认值不一致。
+export const xianyuSellerExclusions = pgTable(
+  "xianyu_seller_exclusions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    platform: text("platform").notNull().default("xianyu"),
+    /** 身份键：「昵称|地区」弱身份，或「xianyu-user-{平台ID}」稳定身份。 */
+    identityKey: text("identity_key").notNull(),
+    identityType: text("identity_type").notNull().default("nickname-area"),
+    nickname: text("nickname").notNull().default(""),
+    area: text("area").notNull().default(""),
+    /** manual 人工拉黑 / auto-rule 规则自动排除；人工与自动分别留痕，模型不产生排除。 */
+    source: text("source").notNull(),
+    reason: text("reason").notNull(),
+    /** 证据摘要 JSON 字符串：观察商品数、窗口、样本标题等。 */
+    evidence: text("evidence").notNull().default("{}"),
+    ruleVersion: text("rule_version"),
+    status: text("status").notNull().default("active"),
+    hitCount: integer("hit_count").notNull().default(0),
+    /** 审计事件 JSON 数组：拉黑/撤销/重新生效均追加，不删历史。 */
+    events: text("events").notNull().default("[]"),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revokeNote: text("revoke_note"),
+    ...auditColumns,
+  },
+  (table) => [uniqueIndex("xianyu_exclusion_identity_unique").on(table.platform, table.identityKey)],
+);
+
+export const xianyuListingObservations = pgTable(
+  "xianyu_listing_observations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    platform: text("platform").notNull().default("xianyu"),
+    /** 平台商品唯一编号；跨关键词、跨轮次只计一件。 */
+    externalId: text("external_id").notNull(),
+    /** 观察时的卖家弱身份键；稳定 ID 由详情补抓回填。 */
+    sellerIdentityKey: text("seller_identity_key").notNull(),
+    sellerNickname: text("seller_nickname").notNull().default(""),
+    sellerArea: text("seller_area").notNull().default(""),
+    stableSellerId: text("stable_seller_id"),
+    category: text("category"),
+    title: text("title").notNull().default(""),
+    price: text("price").notNull().default(""),
+    /** 可靠发布时间；列表缺失时为空，空值不冒充新发布。 */
+    firstPublishedAt: timestamp("first_published_at", { withTimezone: true }),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    seenCount: integer("seen_count").notNull().default(1),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("xianyu_observation_external_unique").on(table.platform, table.externalId),
+    index("xianyu_observation_seller_idx").on(table.sellerIdentityKey),
+  ],
+);
+
+export const xianyuListingHandling = pgTable(
+  "xianyu_listing_handling",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    platform: text("platform").notNull().default("xianyu"),
+    externalId: text("external_id").notNull(),
+    /** ignored 忽略 / pending 暂时待定 / watched 关注；独立于线索库，清空线索不丢失。 */
+    handling: text("handling").notNull(),
+    note: text("note").notNull().default(""),
+    ...auditColumns,
+  },
+  (table) => [uniqueIndex("xianyu_handling_external_unique").on(table.platform, table.externalId)],
+);
