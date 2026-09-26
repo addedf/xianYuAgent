@@ -48,7 +48,7 @@ describe("validateLocalCollectorUrl", () => {
 
 describe("xianyuScanScope", () => {
   it("distinguishes the same keyword searched in different places", () => {
-    const base = { keyword: "劳力士", maxPages: 1, province: "广东", city: "广州" };
+    const base = { keyword: "劳力士", maxPages: 1, mode: "fresh" as const, province: "广东", city: "广州" };
     expect(xianyuScanScope(base)).toBe(xianyuScanScope({ ...base }));
     expect(xianyuScanScope(base)).not.toBe(xianyuScanScope({ ...base, city: "佛山" }));
     expect(xianyuScanScope(base)).not.toBe(xianyuScanScope({ ...base, keyword: "欧米茄" }));
@@ -57,7 +57,7 @@ describe("xianyuScanScope", () => {
 
 describe("normalizeXianyuProduct", () => {
   it("maps the collector row into a conservative internal listing", () => {
-    const listing = normalizeXianyuProduct(sourceProduct, { keyword: "劳力士", maxPages: 1 });
+    const listing = normalizeXianyuProduct(sourceProduct, { keyword: "劳力士", maxPages: 1, mode: "fresh" });
 
     expect(listing).toMatchObject({
       externalId: "778899",
@@ -72,7 +72,7 @@ describe("normalizeXianyuProduct", () => {
 
   it("skips rows with unusable prices", () => {
     expect(
-      normalizeXianyuProduct({ ...sourceProduct, price: "价格异常" }, { keyword: "劳力士", maxPages: 1 }),
+      normalizeXianyuProduct({ ...sourceProduct, price: "价格异常" }, { keyword: "劳力士", maxPages: 1, mode: "fresh" as const }),
     ).toBeNull();
   });
 
@@ -80,7 +80,7 @@ describe("normalizeXianyuProduct", () => {
     const listing = normalizeXianyuProduct({
       ...sourceProduct,
       image_urls: JSON.stringify(["https://img.example.com/front.jpg", "https://img.example.com/back.jpg"]),
-    }, { keyword: "劳力士", maxPages: 1 });
+    }, { keyword: "劳力士", maxPages: 1, mode: "fresh" as const });
 
     expect(listing?.imageUrls).toEqual([
       "https://img.example.com/item.jpg",
@@ -97,7 +97,7 @@ describe("normalizeXianyuProduct", () => {
   });
 
   it("recognizes Longines from the listing title without a detail snapshot", () => {
-    const listing = normalizeXianyuProduct({ ...sourceProduct, title: "浪琴康卡斯 L3.781.4.56.6 自动机械男士腕表" }, { keyword: "腕表", maxPages: 1 });
+    const listing = normalizeXianyuProduct({ ...sourceProduct, title: "浪琴康卡斯 L3.781.4.56.6 自动机械男士腕表" }, { keyword: "腕表", maxPages: 1, mode: "fresh" as const });
     expect(listing).toMatchObject({ category: "watch", brand: "浪琴" });
   });
 });
@@ -139,7 +139,7 @@ describe("detail and profile snapshots", () => {
       detail_json: detailJson,
       seller_user_id: "2208691234567",
       seller_profile_json: profileJson,
-    }, { keyword: "箱包", maxPages: 1 });
+    }, { keyword: "箱包", maxPages: 1, mode: "fresh" as const });
 
     expect(listing).toMatchObject({
       brand: "Louis Vuitton",
@@ -162,7 +162,7 @@ describe("detail and profile snapshots", () => {
   });
 
   it("falls back to the legacy nickname key when the collector has no seller id", () => {
-    const listing = normalizeXianyuProduct(sourceProduct, { keyword: "劳力士", maxPages: 1 });
+    const listing = normalizeXianyuProduct(sourceProduct, { keyword: "劳力士", maxPages: 1, mode: "fresh" });
     expect(listing?.seller.externalId).toBe(legacySellerExternalId("林小姐", "广州"));
     expect(listing?.seller.identityScope).toBe("nickname-region");
     expect(legacySellerExternalId("林小姐", "广州")).toMatch(/^nickname-[0-9a-f]{20}$/);
@@ -173,7 +173,7 @@ describe("detail and profile snapshots", () => {
       ...sourceProduct,
       detail_json: detailJson,
       seller_user_id: "2208691234567",
-    }, { keyword: "箱包", maxPages: 1 });
+    }, { keyword: "箱包", maxPages: 1, mode: "fresh" as const });
     expect(listing?.seller).toMatchObject({
       completedSaleCount: 1043,
       completedSaleCountVerified: true,
@@ -224,11 +224,16 @@ describe("importXianyuSearch", () => {
       ));
     const loadProducts = vi.fn().mockResolvedValue([sourceProduct]);
     const persistListings = vi.fn().mockResolvedValue({ imported: 1, filtered: 0, pendingEvaluation: 0 });
+    const finishScanRun = vi.fn().mockResolvedValue(null);
+    const scanRuns = {
+      startScanRun: vi.fn().mockResolvedValue({ run: { id: "run-1", mode: "fresh" as const, startPage: 1, startedAt: new Date() }, reused: false, startPage: 1 }),
+      finishScanRun,
+    };
 
     await expect(
       importXianyuSearch(
-        { keyword: "劳力士", maxPages: 1, province: "广东", city: "广州" },
-        { env, fetcher, loadProducts, persistListings },
+        { keyword: "劳力士", maxPages: 1, mode: "fresh" as const, province: "广东", city: "广州" },
+        { env, fetcher, loadProducts, persistListings, scanRuns },
       ),
     ).resolves.toEqual({
       keyword: "劳力士",
@@ -239,6 +244,8 @@ describe("importXianyuSearch", () => {
       filteredRecords: 0,
       pendingEvaluation: 0,
       skippedRecords: 0,
+      mode: "fresh",
+      runId: "run-1",
       enrichedDetails: 0,
       blockedDetails: 1,
       sellerProfiles: { fetched: 0, skipped: 0, failed: 1, cooldown: 0 },
@@ -257,9 +264,9 @@ describe("importXianyuSearch", () => {
 
     expect(loadProducts).toHaveBeenCalledWith([12], env.XIANYU_COLLECTOR_DATABASE_URL);
     expect(persistListings).toHaveBeenCalledOnce();
-    expect(persistListings).toHaveBeenCalledWith(expect.any(Array), [sourceProduct], xianyuScanScope({ keyword: "劳力士", maxPages: 1, province: "广东", city: "广州" }));
+    expect(persistListings).toHaveBeenCalledWith(expect.any(Array), [sourceProduct], xianyuScanScope({ keyword: "劳力士", maxPages: 1, mode: "fresh" as const, province: "广东", city: "广州" }));
     expect((fetcher.mock.calls[1]?.[1]?.headers as Headers).get("x-xianyu-service-token")).toBe("collector-token");
-    expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).toMatchObject({ keyword: "劳力士", province: "广东", city: "广州", max_pages: 1 });
+    expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).toMatchObject({ keyword: "劳力士", province: "广东", city: "广州", max_pages: 1, start_page: 1 });
     expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).not.toHaveProperty("category");
   });
 
@@ -269,7 +276,7 @@ describe("importXianyuSearch", () => {
 
     await expect(
       importXianyuSearch(
-        { keyword: "劳力士", maxPages: 1 },
+        { keyword: "劳力士", maxPages: 1, mode: "fresh" as const },
         { env, fetcher, persistListings },
       ),
     ).rejects.toThrow("先在连接与控制页面完成闲鱼账号登录");

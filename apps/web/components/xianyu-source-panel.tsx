@@ -13,6 +13,18 @@ interface ImportResult {
   importedRecords: number;
   filteredRecords?: number;
   pendingEvaluation?: number;
+  mode?: "fresh" | "expand";
+  scanProgress?: {
+    requestedPages: number;
+    startPage: number;
+    completedPages: number;
+    failedPages: number[];
+    stopReason?: string;
+  };
+  newDiscoveries?: number;
+  newPublications?: number;
+  excludedListings?: number;
+  ignoredListings?: number;
   enrichedDetails?: number;
   blockedDetails?: number;
   sellerProfiles?: { fetched: number; skipped: number; failed: number; cooldown: number };
@@ -25,6 +37,14 @@ interface ImportResult {
     publishedAt: string;
     sourceUrl?: string;
   }>;
+}
+
+function coverageLine(result: ImportResult): string | null {
+  if (!result.scanProgress) return null;
+  const { startPage, completedPages, requestedPages, failedPages } = result.scanProgress;
+  const covered = completedPages > 0 ? `第 ${startPage}～${startPage + completedPages - 1} 页` : "无页面成功覆盖";
+  const failed = failedPages.length > 0 ? `，第 ${failedPages.join("、")} 页失败未覆盖` : "";
+  return `覆盖有限，不宣称已扫完：预算 ${requestedPages} 页，完成 ${covered}${failed}。`;
 }
 
 function optionalNumber(value: string): number | undefined {
@@ -40,9 +60,11 @@ export function XianyuSourcePanel() {
   const [minPrice, setMinPrice] = useState("5000");
   const [maxPrice, setMaxPrice] = useState("150000");
   const [maxPages, setMaxPages] = useState("1");
+  const [mode, setMode] = useState<"fresh" | "expand">("fresh");
   const [loading, setLoading] = useState(false);
   const [authState, setAuthState] = useState<"checking" | "authenticated" | "required" | "unavailable">("checking");
   const [results, setResults] = useState<ImportResult[]>([]);
+  const [reuseNotices, setReuseNotices] = useState<string[]>([]);
   const [progress, setProgress] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -80,9 +102,11 @@ export function XianyuSourcePanel() {
     setLoading(true);
     setError(null);
     setResults([]);
+    setReuseNotices([]);
+    const notices: string[] = [];
     try {
       for (const [index, keyword] of keywords.entries()) {
-        setProgress(`正在搜索第 ${index + 1}/${keywords.length} 个关键词：${keyword}`);
+        setProgress(`正在${mode === "expand" ? "扩大覆盖" : "追踪最新"} · 第 ${index + 1}/${keywords.length} 个关键词：${keyword}`);
         const response = await fetch("/api/sources/xianyu/search", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -92,14 +116,22 @@ export function XianyuSourcePanel() {
             minPrice: optionalNumber(minPrice),
             maxPrice: optionalNumber(maxPrice),
             maxPages: Number(maxPages),
-            publishDays: 3,
+            mode,
+            // 追踪最新固定看最近 3 天；扩大覆盖不带时间窗，跨轮累积同一范围。
+            publishDays: mode === "fresh" ? 3 : undefined,
           }),
         });
         const payload = (await response.json()) as { result?: ImportResult; error?: string; code?: string };
         if (payload.code === "XIANYU_AUTH_REQUIRED") setAuthState("required");
+        if (payload.code === "SCAN_RUN_IN_PROGRESS") {
+          // 该范围已有进行中的运行：展示而不是重复发起（方案 7.2）。
+          notices.push(`${keyword}：${payload.error || "已有进行中的扫描运行。"}`);
+          continue;
+        }
         if (!response.ok || !payload.result) throw new Error(`${keyword}：${payload.error || "采集请求失败。"}`);
         setResults((current) => [...current, payload.result!]);
       }
+      if (notices.length > 0) setReuseNotices(notices);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "采集请求失败。");
     } finally {
@@ -114,11 +146,15 @@ export function XianyuSourcePanel() {
     importedRecords: current.importedRecords + result.importedRecords,
     filteredRecords: current.filteredRecords + (result.filteredRecords ?? 0),
     pendingEvaluation: current.pendingEvaluation + (result.pendingEvaluation ?? 0),
+    newDiscoveries: current.newDiscoveries + (result.newDiscoveries ?? 0),
+    newPublications: current.newPublications + (result.newPublications ?? 0),
+    excludedItems: current.excludedItems + (result.excludedListings ?? 0),
+    ignoredItems: current.ignoredItems + (result.ignoredListings ?? 0),
     enrichedDetails: current.enrichedDetails + (result.enrichedDetails ?? 0),
     blockedDetails: current.blockedDetails + (result.blockedDetails ?? 0),
     sellerProfilesFetched: current.sellerProfilesFetched + (result.sellerProfiles?.fetched ?? 0),
     sellerProfilesFailed: current.sellerProfilesFailed + (result.sellerProfiles?.failed ?? 0),
-  }), { totalResults: 0, newRecords: 0, importedRecords: 0, filteredRecords: 0, pendingEvaluation: 0, enrichedDetails: 0, blockedDetails: 0, sellerProfilesFetched: 0, sellerProfilesFailed: 0 });
+  }), { totalResults: 0, newRecords: 0, importedRecords: 0, filteredRecords: 0, pendingEvaluation: 0, newDiscoveries: 0, newPublications: 0, excludedItems: 0, ignoredItems: 0, enrichedDetails: 0, blockedDetails: 0, sellerProfilesFetched: 0, sellerProfilesFailed: 0 });
   const items = [...new Map(results.flatMap((result) => result.items).map((item) => [item.externalId, item])).values()];
 
   return (
@@ -157,6 +193,13 @@ export function XianyuSourcePanel() {
         <label>
           <span>最高价</span>
           <input inputMode="numeric" value={maxPrice} onChange={(event) => setMaxPrice(event.target.value)} />
+        </label>
+        <label>
+          <span>探查模式</span>
+          <select value={mode} onChange={(event) => setMode(event.target.value as "fresh" | "expand")}>
+            <option value="fresh">追踪最新（日常默认，最近 3 天）</option>
+            <option value="expand">扩大覆盖（不带时间窗，从上次覆盖边界重叠推进）</option>
+          </select>
         </label>
         <label>
           <span>扫描页数</span>
@@ -199,19 +242,32 @@ export function XianyuSourcePanel() {
       </div>
 
       {error && <div className="error-state" role="alert"><WarningCircle size={20} weight="fill" />{error}</div>}
+      {reuseNotices.length > 0 && (
+        <div className="notice-state" role="status">
+          {reuseNotices.map((notice) => <p key={notice}>{notice}</p>)}
+          <small>同一任务范围进行中的运行会被复用展示，避免并发多轮扫描。</small>
+        </div>
+      )}
       {results.length > 0 && (
         <div role="status">
-          <p className="source-search-summary">已完成 {results.length} 个关键词；以下搜索结果为各次查询合计，可能包含重复商品。</p>
+          <p className="source-search-summary">已完成 {results.length} 个关键词（{mode === "expand" ? "扩大覆盖" : "追踪最新"}）；以下搜索结果为各次查询合计，可能包含重复商品。</p>
           <div className="source-result">
             <div><span>搜索结果合计</span><strong>{totals.totalResults}</strong></div>
             <div><span>采集器新增</span><strong>{totals.newRecords}</strong></div>
+            <div><span>新发现商品</span><strong>{totals.newDiscoveries}</strong><small>其中新发布 {totals.newPublications}</small></div>
             <div><span>成功入库</span><strong>{totals.importedRecords}</strong></div>
+            <div><span>排除/忽略拦截</span><strong>{totals.excludedItems + totals.ignoredItems}</strong><small>排除 {totals.excludedItems} · 忽略 {totals.ignoredItems}</small></div>
             <div><span>已过滤</span><strong>{totals.filteredRecords}</strong></div>
             <div><span>待评分</span><strong>{totals.pendingEvaluation}</strong></div>
             <a href="/leads">查看线索库 <ArrowRight size={16} /></a>
           </div>
           <div className="source-search-breakdown" aria-label="各关键词搜索结果">
-            {results.map((result) => <span key={result.keyword}>{result.keyword}：{result.totalResults} 条结果，{result.importedRecords} 条入库</span>)}
+            {results.map((result) => (
+              <span key={result.keyword}>
+                {result.keyword}：{result.totalResults} 条结果，{result.importedRecords} 条入库
+                {coverageLine(result) ? ` · ${coverageLine(result)}` : ""}
+              </span>
+            ))}
           </div>
           {totals.pendingEvaluation > 0 && (
             <div className="notice-state" role="status">本轮有 {totals.pendingEvaluation} 条线索暂时没有 JEV 评分（评分不可用或被限频）；它们会保持「待模型评分」状态，恢复后的下一次扫描自动补评。</div>

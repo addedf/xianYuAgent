@@ -18,7 +18,7 @@ import { loadSellerRuleSettings } from "@/src/server/seller-rule-settings";
 import { loadPreFilterSettings } from "@/src/server/pre-filter-settings";
 import { loadActiveKnowledgeEntries } from "@/src/server/knowledge-injection";
 import { loadActiveExclusionMap, loadHandlingMap, matchExclusion } from "@/src/server/exclusions";
-import { assessments, marketplaceListings, sellers } from "@/src/server/db/schema";
+import { assessments, marketplaceListings, outboxEvents, sellers } from "@/src/server/db/schema";
 import { legacySellerExternalId, parseDetailSnapshot, parseSellerProfileSnapshot, parseSourceProduct, type SourceProduct, type SellerProfileSnapshot, xianyuProductExternalId } from "./xianyu-spider";
 
 function fingerprint(listing: MarketplaceListing): string {
@@ -453,6 +453,24 @@ export async function saveListings(listings: MarketplaceListing[], sourceProduct
       await db.insert(assessments).values({ listingId: item.id, ...assessmentValues(record, assessmentInputFingerprint) }).onConflictDoNothing({ target: [assessments.listingId, assessments.inputFingerprint] });
       continue;
     }
+
+    // 新线索事件按商品去重（idempotency_key 唯一）：重扫、重评、参考价变化都不重复产生；
+    // 投递仍未接线（主动消息边界），事件先作为「将要提醒的事实」持久化。
+    await db.insert(outboxEvents).values({
+      eventType: "lead-new",
+      aggregateType: "marketplace_listing",
+      aggregateId: item.id,
+      idempotencyKey: `xianyu-lead-new:${item.listing.externalId}`,
+      payload: {
+        listingId: item.id,
+        externalId: item.listing.externalId,
+        title: item.listing.title,
+        price: item.listing.price,
+        category: item.listing.category,
+        sellerDisplayName: item.listing.seller.displayName,
+        firstSeenAt: item.listing.firstSeenAt,
+      },
+    }).onConflictDoNothing({ target: outboxEvents.idempotencyKey });
 
     // 未命中过滤器的商品必须有 JEV 评分；评分不可用时不落任何评估记录，
     // 线索保持待评分状态，恢复后的下一次扫描经 inputFingerprint 自动补评。

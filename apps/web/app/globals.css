@@ -809,3 +809,5 @@ p { text-wrap: pretty; }
   .exclusion-banner { flex-wrap: wrap; }
   .exclusion-banner .button { margin-left: 0; }
 }
+
+.freshness-new { border-color: var(--success); background: var(--success-soft); color: var(--success); }

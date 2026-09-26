@@ -1,6 +1,6 @@
 import { ZodError } from "zod";
 import { adminApiError } from "@/src/server/auth/admin-request";
-import { importXianyuSearch } from "@/src/server/sources/xianyu-spider";
+import { importXianyuSearch, ScanRunInProgressError } from "@/src/server/sources/xianyu-spider";
 
 export const runtime = "nodejs";
 
@@ -13,6 +13,19 @@ export async function POST(request: Request) {
   } catch (reason) {
     if (reason instanceof ZodError) {
       return Response.json({ error: "搜索条件不正确。", issues: reason.issues }, { status: 400 });
+    }
+    // 同一范围已有运行：复用/展示当前运行，不并发多轮（方案 7.2）。
+    if (reason instanceof ScanRunInProgressError) {
+      return Response.json({
+        error: reason.message,
+        code: "SCAN_RUN_IN_PROGRESS",
+        runningRun: {
+          id: reason.run.id,
+          mode: reason.run.mode,
+          startPage: reason.run.startPage,
+          startedAt: reason.run.startedAt.toISOString(),
+        },
+      }, { status: 409 });
     }
 
     const message = reason instanceof Error ? reason.message : "闲鱼数据导入失败。";

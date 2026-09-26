@@ -6,6 +6,21 @@ export type RiskLevel = "low" | "insufficient" | "medium" | "high";
 export type RecommendedAction = "notify" | "review" | "archive" | "skip";
 export type ListingStatus = "active" | "possibly_sold";
 
+/** 「新发布」判定窗口：首次发现时可靠发布时间在 3 天内（方案 7.1）。 */
+export const NEW_PUBLICATION_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
+
+/**
+ * 时间语义（方案 7.1）：旧商品今天首次搜到只能标记「新发现」，
+ * 可靠发布时间满足条件时才标记「新发布」；发布时间缺失不标记。
+ */
+export function listingFreshness(listing: Pick<MarketplaceListing, "publishedAt" | "firstSeenAt">): "new-publication" | "new-discovery" | null {
+  const published = Date.parse(listing.publishedAt);
+  if (!Number.isFinite(published) || published <= 0 || new Date(published).getUTCFullYear() <= 1970) return null;
+  const firstSeen = Date.parse(listing.firstSeenAt);
+  if (!Number.isFinite(firstSeen)) return null;
+  return firstSeen - published <= NEW_PUBLICATION_WINDOW_MS ? "new-publication" : "new-discovery";
+}
+
 export interface SellerProfile {
   externalId: string;
   /** sellers 表主键，人工拉黑等操作以它定位卖家行。 */

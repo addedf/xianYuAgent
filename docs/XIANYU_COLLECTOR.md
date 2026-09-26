@@ -6,7 +6,7 @@ Web 项目不保存闲鱼 Cookie，也不实现核身或反爬逻辑。管理员
 
 当前适配器参考 `superboyyy/xianyu_spider` 的数据契约：
 
-- `POST /search/`：触发关键词、价格、地区和最新排序搜索，返回 `new_record_ids`，以及详情/主页补抓审计计数（`enriched_details`、`seller_profiles`）。
+- `POST /search/`：触发关键词、价格、地区和最新排序搜索，返回 `new_record_ids`、详情/主页补抓审计计数（`enriched_details`、`seller_profiles`）、扫描进度 `scan_progress`（start_page / completed_pages / failed_pages / stop_reason——单页失败记录后继续后续页，失败页不算成功覆盖）与导入硬筛 `import_filter` 摘要（含新发现 `new_discoveries` / 新发布 `new_publications`：首次发现且可靠发布时间在 3 天窗口内才计新发布，旧货首次搜到只算新发现）。请求支持 `start_page`：扩大覆盖模式从上次覆盖边界回退一页重叠后继续推进深度。
 - `xianyu_products` 表：按新增 ID 读取标题、价格、地区、卖家昵称、链接、图片、发布时间，以及详情补抓列 `detail_json`（详情原始 JSON）、`detail_fetched_at`、`seller_user_id`（卖家平台用户 ID）。
 - `xianyu_seller_profiles` 表：按 `seller_user_id` 关联卖家主页快照，`profile_json` 汇总卖出件数、在售件数、信用等级、注册时长与在售分类分布，`head_json`/`items_json` 保留原始响应。
 

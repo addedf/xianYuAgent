@@ -18,7 +18,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { RiskChip } from "@/components/status-chip";
-import type { ListingAssessment, MarketplaceListing, RecommendedAction } from "@/src/domain/listing";
+import { listingFreshness, type ListingAssessment, type MarketplaceListing, type RecommendedAction } from "@/src/domain/listing";
 import { exclusionReasonLabel, identityTypeLabel } from "@/src/domain/seller-identity";
 import { nonPersonalSellerReason } from "@/src/domain/seller";
 import { DEFAULT_SELLER_RULE_THRESHOLDS, type SellerRuleThresholds } from "@/src/domain/seller-rules";
@@ -295,6 +295,8 @@ export function LeadWorkbench({ items, demoMode = true, confidenceThreshold = 55
                   <span className="queue-item-title">{item.listing.title}</span>
                   <span className="queue-item-meta">{currency.format(item.listing.price)} · {item.listing.region}</span>
                   <RiskChip level={item.assessment.riskLevel} />
+                  {listingFreshness(item.listing) === "new-publication" && <span className="seller-type-tag freshness-new">新发布</span>}
+                  {listingFreshness(item.listing) === "new-discovery" && <span className="seller-type-tag">新发现旧货</span>}
                   {item.assessment.filterCode && <span className="seller-type-tag">已过滤</span>}
                   {item.assessment.pending && <span className="seller-type-tag">待模型评分</span>}
                   {item.listing.sellerExcluded && <span className="seller-type-tag">卖家已排除</span>}

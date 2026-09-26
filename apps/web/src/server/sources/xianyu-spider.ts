@@ -5,6 +5,7 @@ import type { Category, MarketplaceListing } from "@/src/domain/listing";
 import type { ServerEnv } from "@/src/server/env";
 import type { SaveListingsOutcome } from "./xianyu-spider-persistence";
 import { getXianyuAuthStatus } from "./xianyu-auth";
+import { ScanRunInProgressError } from "@/src/server/scan-runs";
 import { requestXianyuCollector } from "./xianyu-collector-client";
 
 export { validateLocalCollectorUrl } from "./xianyu-collector-client";
@@ -13,6 +14,8 @@ export const xianyuSearchInputSchema = z
   .object({
     keyword: z.string().trim().min(1).max(40),
     maxPages: z.number().int().min(1).max(10).default(1),
+    /** fresh 追踪最新（默认）/ expand 扩大覆盖（不带时间窗，从上次覆盖边界重叠推进）。 */
+    mode: z.enum(["fresh", "expand"]).default("fresh"),
     minPrice: z.number().int().nonnegative().optional(),
     maxPrice: z.number().int().positive().optional(),
     province: z.string().trim().max(20).optional(),
@@ -26,6 +29,14 @@ export const xianyuSearchInputSchema = z
 
 export type XianyuSearchInput = z.infer<typeof xianyuSearchInputSchema>;
 
+const scanProgressSchema = z.object({
+  requested_pages: z.number().int().nonnegative().optional(),
+  start_page: z.number().int().positive().optional(),
+  completed_pages: z.number().int().nonnegative().optional(),
+  failed_pages: z.array(z.number().int().positive()).optional(),
+  stop_reason: z.string().optional(),
+}).optional();
+
 const collectorResponseSchema = z.object({
   status: z.literal("success"),
   keyword: z.string(),
@@ -37,6 +48,16 @@ const collectorResponseSchema = z.object({
   record_ids: z.array(z.number().int().positive()).optional(),
   enriched_details: z.number().int().nonnegative().optional(),
   blocked_details: z.number().int().nonnegative().optional(),
+  scan_progress: scanProgressSchema,
+  import_filter: z.object({
+    observed_items: z.number().int().nonnegative().optional(),
+    new_discoveries: z.number().int().nonnegative().optional(),
+    new_publications: z.number().int().nonnegative().optional(),
+    excluded_seller_items: z.number().int().nonnegative().optional(),
+    ignored_items: z.number().int().nonnegative().optional(),
+    new_excluded_sellers: z.array(z.string()).optional(),
+    frequency_threshold: z.number().int().optional(),
+  }).optional(),
   seller_profiles: z.object({
     fetched: z.number().int().nonnegative(),
     skipped: z.number().int().nonnegative(),
@@ -227,6 +248,22 @@ export interface XianyuImportResult {
   filteredRecords: number;
   pendingEvaluation: number;
   skippedRecords: number;
+  /** 探查模式与运行信息（方案 7）。 */
+  mode: "fresh" | "expand";
+  runId: string;
+  scanProgress?: {
+    requestedPages: number;
+    startPage: number;
+    completedPages: number;
+    failedPages: number[];
+    stopReason?: string;
+  };
+  /** 观察索引口径：本轮首次发现的不同商品数；其中可靠发布时间在窗口内的为新发布。 */
+  newDiscoveries?: number;
+  newPublications?: number;
+  /** 命中卖家排除/商品忽略、未入库的商品数。 */
+  excludedListings?: number;
+  ignoredListings?: number;
   /** 本轮补抓到详情的商品数（含图片之外的字段）。 */
   enrichedDetails?: number;
   /** 本轮详情被平台限流的商品数。 */
@@ -251,6 +288,11 @@ interface ImportDependencies {
   fetcher?: typeof fetch;
   loadProducts?: (ids: number[], databaseUrl: string) => Promise<SourceProduct[]>;
   persistListings?: (listings: MarketplaceListing[], products: SourceProduct[], scanScope: string) => Promise<SaveListingsOutcome>;
+  /** 探查运行记录（方案 7）；默认走 @/src/server/scan-runs。 */
+  scanRuns?: {
+    startScanRun: (input: XianyuSearchInput, mode: "fresh" | "expand", requestedPages: number) => Promise<{ run: { id: string; mode: "fresh" | "expand"; startPage: number; startedAt: Date }; reused: boolean; startPage: number }>;
+    finishScanRun: (runId: string, patch: { status: "completed" | "partial" | "failed"; stopReason?: string | null; completedPages?: number; failedPages?: number[]; resultCounts?: Record<string, unknown> }) => Promise<unknown>;
+  };
 }
 
 const BRAND_ALIASES: Array<{ brand: string; terms: string[] }> = [
@@ -421,6 +463,7 @@ async function requestCollector(
   env: ServerEnv,
   input: XianyuSearchInput,
   fetcher: typeof fetch,
+  startPage = 1,
 ): Promise<CollectorResponse> {
   // 详情与主页补抓在采集器内串行 + 抖动，一轮完整搜索可能超过两分钟，
   // 超时太短会导致采集器已成功入库而 Web 端先报错。
@@ -430,6 +473,7 @@ async function requestCollector(
     body: JSON.stringify({
       keyword: input.keyword,
       max_pages: input.maxPages,
+      start_page: startPage,
       sort: "newest",
       min_price: input.minPrice,
       max_price: input.maxPrice,
@@ -453,38 +497,99 @@ export async function importXianyuSearch(inputValue: unknown, dependencies: Impo
   const auth = await getXianyuAuthStatus({ env, fetcher });
   if (!auth.loggedIn) throw new Error("请先在连接与控制页面完成闲鱼账号登录。");
 
-  const collectorResult = await requestCollector(env, input, fetcher);
-  if (!collectorResult.logged_in) throw new Error("闲鱼登录态已失效，请重新连接账号。");
-  const productDatabaseUrl = env.XIANYU_COLLECTOR_DATABASE_URL || env.DATABASE_URL;
-  const loadProducts = dependencies.loadProducts ?? (await import("./xianyu-spider-persistence")).loadSourceProducts;
-  const resultIds = collectorResult.record_ids?.length ? collectorResult.record_ids : collectorResult.new_record_ids;
-  const products = await loadProducts(resultIds, productDatabaseUrl);
-  const normalized = products
-    .map((product) => normalizeXianyuProduct(product, input))
-    .filter((listing): listing is MarketplaceListing => listing !== null);
-  const persistListings = dependencies.persistListings ?? (await import("./xianyu-spider-persistence")).saveListings;
-  const { imported: importedRecords, filtered: filteredRecords, pendingEvaluation } = await persistListings(normalized, products, xianyuScanScope(input));
+  // 运行记录先行：同一范围进行中的运行直接复用/展示，不无意并发多轮（方案 7.2）。
+  const scanRuns = dependencies.scanRuns ?? (await import("@/src/server/scan-runs"));
+  const { run, reused, startPage } = await scanRuns.startScanRun(input, input.mode, input.maxPages);
+  if (reused) throw new ScanRunInProgressError(run);
 
-  return {
-    keyword: input.keyword,
-    loggedIn: collectorResult.logged_in,
-    totalResults: collectorResult.total_results,
-    newRecords: collectorResult.new_records,
-    importedRecords,
-    filteredRecords,
-    pendingEvaluation,
-    skippedRecords: Math.max(0, products.length - normalized.length),
-    ...(collectorResult.enriched_details !== undefined ? { enrichedDetails: collectorResult.enriched_details } : {}),
-    ...(collectorResult.blocked_details !== undefined ? { blockedDetails: collectorResult.blocked_details } : {}),
-    ...(collectorResult.seller_profiles ? { sellerProfiles: collectorResult.seller_profiles } : {}),
-    items: normalized.slice(0, 20).map((listing) => ({
-      externalId: listing.externalId,
-      title: listing.title,
-      price: listing.price,
-      region: listing.region,
-      publishedAt: listing.publishedAt,
-      sourceUrl: listing.sourceUrl,
-      imageUrl: listing.imageUrls[0],
-    })),
-  };
+  let runClosed = false;
+  try {
+    const collectorResult = await requestCollector(env, input, fetcher, startPage);
+    if (!collectorResult.logged_in) {
+      await scanRuns.finishScanRun(run.id, { status: "failed", stopReason: "login-expired", completedPages: 0 });
+      runClosed = true;
+      throw new Error("闲鱼登录态已失效，请重新连接账号。");
+    }
+    const productDatabaseUrl = env.XIANYU_COLLECTOR_DATABASE_URL || env.DATABASE_URL;
+    const loadProducts = dependencies.loadProducts ?? (await import("./xianyu-spider-persistence")).loadSourceProducts;
+    const resultIds = collectorResult.record_ids?.length ? collectorResult.record_ids : collectorResult.new_record_ids;
+    const products = await loadProducts(resultIds, productDatabaseUrl);
+    const normalized = products
+      .map((product) => normalizeXianyuProduct(product, input))
+      .filter((listing): listing is MarketplaceListing => listing !== null);
+    const persistListings = dependencies.persistListings ?? (await import("./xianyu-spider-persistence")).saveListings;
+    // 采集器成功返回意味着观察索引已持久化；此后才提交运行进度（方案 7.2）。
+    const { imported: importedRecords, filtered: filteredRecords, pendingEvaluation, excludedListings, ignoredListings } = await persistListings(normalized, products, xianyuScanScope(input));
+    const progress = collectorResult.scan_progress;
+    const scanProgress = progress ? {
+      requestedPages: progress.requested_pages ?? input.maxPages,
+      startPage: progress.start_page ?? startPage,
+      completedPages: progress.completed_pages ?? 0,
+      failedPages: progress.failed_pages ?? [],
+      stopReason: progress.stop_reason,
+    } : undefined;
+    const pageFailure = scanProgress && (scanProgress.failedPages.length > 0 || scanProgress.completedPages === 0);
+    const runStatus: "completed" | "partial" | "failed" = scanProgress
+      ? (scanProgress.completedPages === 0 ? "failed" : pageFailure ? "partial" : "completed")
+      : "completed";
+    await scanRuns.finishScanRun(run.id, {
+      status: runStatus,
+      stopReason: scanProgress?.stopReason ?? (pageFailure ? "page-failed" : "all-pages-done"),
+      completedPages: scanProgress?.completedPages ?? 0,
+      failedPages: scanProgress?.failedPages ?? [],
+      resultCounts: {
+        keyword: input.keyword,
+        mode: input.mode,
+        totalResults: collectorResult.total_results,
+        newRecords: collectorResult.new_records,
+        importedRecords,
+        filteredRecords,
+        pendingEvaluation,
+        excludedListings: excludedListings ?? 0,
+        ignoredListings: ignoredListings ?? 0,
+        newDiscoveries: collectorResult.import_filter?.new_discoveries ?? 0,
+        newPublications: collectorResult.import_filter?.new_publications ?? 0,
+        excludedSellerHits: collectorResult.import_filter?.excluded_seller_items ?? 0,
+        newExcludedSellers: collectorResult.import_filter?.new_excluded_sellers?.length ?? 0,
+        blockedDetails: collectorResult.blocked_details ?? 0,
+      },
+    });
+    runClosed = true;
+
+    return {
+      keyword: input.keyword,
+      loggedIn: collectorResult.logged_in,
+      totalResults: collectorResult.total_results,
+      newRecords: collectorResult.new_records,
+      importedRecords,
+      filteredRecords,
+      pendingEvaluation,
+      skippedRecords: Math.max(0, products.length - normalized.length),
+      mode: input.mode,
+      runId: run.id,
+      ...(scanProgress ? { scanProgress } : {}),
+      newDiscoveries: collectorResult.import_filter?.new_discoveries,
+      newPublications: collectorResult.import_filter?.new_publications,
+      excludedListings,
+      ignoredListings,
+      ...(collectorResult.enriched_details !== undefined ? { enrichedDetails: collectorResult.enriched_details } : {}),
+      ...(collectorResult.blocked_details !== undefined ? { blockedDetails: collectorResult.blocked_details } : {}),
+      ...(collectorResult.seller_profiles ? { sellerProfiles: collectorResult.seller_profiles } : {}),
+      items: normalized.slice(0, 20).map((listing) => ({
+        externalId: listing.externalId,
+        title: listing.title,
+        price: listing.price,
+        region: listing.region,
+        publishedAt: listing.publishedAt,
+        sourceUrl: listing.sourceUrl,
+        imageUrl: listing.imageUrls[0],
+      })),
+    };
+  } catch (reason) {
+    // 运行失败也要落终态：失败页/未完成范围不能被标记为成功覆盖（方案 7.2）。
+    if (!runClosed) await scanRuns.finishScanRun(run.id, { status: "failed", stopReason: "error", completedPages: 0 });
+    throw reason;
+  }
 }
+
+export { ScanRunInProgressError };
